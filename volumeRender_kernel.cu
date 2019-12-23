@@ -20,15 +20,6 @@
 typedef unsigned int  uint;
 typedef unsigned char uchar;
 
-cudaArray *d_volumeArray = 0;
-cudaArray *d_transferFuncArray;
-
-typedef unsigned char VolumeType;
-//typedef unsigned short VolumeType;
-
-cudaTextureObject_t	texObject; // For 3D texture
-cudaTextureObject_t transferTex; // For 1D transfer function texture
-
 typedef struct
 {
     float4 m[3];
@@ -42,12 +33,17 @@ struct Ray
     float3 d;   // direction
 };
 
+__device__
+
+
 // intersect ray with a box
 // http://www.siggraph.org/education/materials/HyperGraph/raytrace/rtinter3.htm
 
 __device__
 int intersectBox(Ray r, float3 boxmin, float3 boxmax, float *tnear, float *tfar)
 {
+    //TODO: Needs to be sphere!
+
     // compute intersection of ray with all six bbox planes
     float3 invR = make_float3(1.0f) / r.d;
     float3 tbot = invR * (boxmin - r.o);
@@ -145,10 +141,7 @@ __device__ float3 fragNormal(float3 p)
 
 
 __global__ void
-d_render(uint *d_output, uint imageW, uint imageH,
-         float density, float brightness,
-         float transferOffset, float transferScale, cudaTextureObject_t	tex,
-         cudaTextureObject_t	transferTex)
+d_render(uint *d_output, uint imageW, uint imageH)
 {
     const int maxSteps = 500;
     
@@ -220,122 +213,9 @@ d_render(uint *d_output, uint imageW, uint imageH,
 }
 
 extern "C"
-void setTextureFilterMode(bool bLinearFilter)
+void render_kernel(dim3 gridSize, dim3 blockSize, uint *d_output, uint imageW, uint imageH)
 {
-    if (texObject)
-    {
-        checkCudaErrors(cudaDestroyTextureObject(texObject));
-    }
-    cudaResourceDesc            texRes;
-    memset(&texRes,0,sizeof(cudaResourceDesc));
-
-    texRes.resType            = cudaResourceTypeArray;
-    texRes.res.array.array    = d_volumeArray;
-
-    cudaTextureDesc             texDescr;
-    memset(&texDescr,0,sizeof(cudaTextureDesc));
-
-    texDescr.normalizedCoords = true;
-    texDescr.filterMode       = bLinearFilter ? cudaFilterModeLinear : cudaFilterModePoint;
-
-    texDescr.addressMode[0] = cudaAddressModeWrap;
-    texDescr.addressMode[1] = cudaAddressModeWrap;
-    texDescr.addressMode[2] = cudaAddressModeWrap;
-
-    texDescr.readMode = cudaReadModeNormalizedFloat;
-
-    checkCudaErrors(cudaCreateTextureObject(&texObject, &texRes, &texDescr, NULL));
-
-}
-
-extern "C"
-void initCuda(void *h_volume, cudaExtent volumeSize)
-{
-    // create 3D array
-    cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<VolumeType>();
-    checkCudaErrors(cudaMalloc3DArray(&d_volumeArray, &channelDesc, volumeSize));
-
-    // copy data to 3D array
-    cudaMemcpy3DParms copyParams = {0};
-    copyParams.srcPtr   = make_cudaPitchedPtr(h_volume, volumeSize.width*sizeof(VolumeType), volumeSize.width, volumeSize.height);
-    copyParams.dstArray = d_volumeArray;
-    copyParams.extent   = volumeSize;
-    copyParams.kind     = cudaMemcpyHostToDevice;
-    checkCudaErrors(cudaMemcpy3D(&copyParams));
-
-    cudaResourceDesc            texRes;
-    memset(&texRes, 0, sizeof(cudaResourceDesc));
-
-    texRes.resType            = cudaResourceTypeArray;
-    texRes.res.array.array    = d_volumeArray;
-
-    cudaTextureDesc             texDescr;
-    memset(&texDescr, 0, sizeof(cudaTextureDesc));
-
-    texDescr.normalizedCoords = true; // access with normalized texture coordinates
-    texDescr.filterMode       = cudaFilterModeLinear; // linear interpolation
-
-    texDescr.addressMode[0] = cudaAddressModeClamp;  // clamp texture coordinates
-    texDescr.addressMode[1] = cudaAddressModeClamp;
-    texDescr.addressMode[2] = cudaAddressModeClamp;
-
-    texDescr.readMode = cudaReadModeNormalizedFloat;
-
-    checkCudaErrors(cudaCreateTextureObject(&texObject, &texRes, &texDescr, NULL));
-
-    // create transfer function texture
-    float4 transferFunc[] =
-    {
-        {  0.0, 0.0, 0.0, 0.0, },
-        {  1.0, 0.0, 0.0, 1.0, },
-        {  1.0, 0.5, 0.0, 1.0, },
-        {  1.0, 1.0, 0.0, 1.0, },
-        {  0.0, 1.0, 0.0, 1.0, },
-        {  0.0, 1.0, 1.0, 1.0, },
-        {  0.0, 0.0, 1.0, 1.0, },
-        {  1.0, 0.0, 1.0, 1.0, },
-        {  0.0, 0.0, 0.0, 0.0, },
-    };
-
-    cudaChannelFormatDesc channelDesc2 = cudaCreateChannelDesc<float4>();
-    cudaArray *d_transferFuncArray;
-    checkCudaErrors(cudaMallocArray(&d_transferFuncArray, &channelDesc2, sizeof(transferFunc)/sizeof(float4), 1));
-    checkCudaErrors(cudaMemcpyToArray(d_transferFuncArray, 0, 0, transferFunc, sizeof(transferFunc), cudaMemcpyHostToDevice));
-
-    memset(&texRes,0,sizeof(cudaResourceDesc));
-
-    texRes.resType            = cudaResourceTypeArray;
-    texRes.res.array.array    = d_transferFuncArray;
-
-    memset(&texDescr,0,sizeof(cudaTextureDesc));
-
-    texDescr.normalizedCoords = true; // access with normalized texture coordinates
-    texDescr.filterMode       = cudaFilterModeLinear;
-
-    texDescr.addressMode[0] = cudaAddressModeClamp; // wrap texture coordinates
-
-    texDescr.readMode = cudaReadModeElementType;
-
-    checkCudaErrors(cudaCreateTextureObject(&transferTex, &texRes, &texDescr, NULL));
-}
-
-extern "C"
-void freeCudaBuffers()
-{
-    checkCudaErrors(cudaDestroyTextureObject(texObject));
-    checkCudaErrors(cudaDestroyTextureObject(transferTex));
-    checkCudaErrors(cudaFreeArray(d_volumeArray));
-    checkCudaErrors(cudaFreeArray(d_transferFuncArray));
-}
-
-
-extern "C"
-void render_kernel(dim3 gridSize, dim3 blockSize, uint *d_output, uint imageW, uint imageH,
-                   float density, float brightness, float transferOffset, float transferScale)
-{
-    d_render<<<gridSize, blockSize>>>(d_output, imageW, imageH, density,
-                                      brightness, transferOffset, transferScale,
-                                      texObject, transferTex);
+    d_render<<<gridSize, blockSize>>>(d_output, imageW, imageH);
 }
 
 extern "C"
