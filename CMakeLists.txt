@@ -1,20 +1,30 @@
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 3.12)
 
-project(sdfRenderer)
+project(sdfRenderer LANGUAGES CXX CUDA)
 
 find_package(CUDA QUIET REQUIRED)
 find_package(GLUT REQUIRED)
+find_package(OpenGL REQUIRED)
+
+if (CUDA_VERSION VERSION_LESS 9.2)
+  message(FATAL_ERROR "CUDA 9.2+ Required, Found ${CUDA_VERSION}.")
+endif()
+
+add_subdirectory(submodules/cutlass)
 
 include_directories(
     kernels
     common
+    ${CUDA_INCLUDE_DIRS}
+    ${GLUT_INCLUDE_DIRS}
+    ${OPENGL_INCLUDE_DIRS}
+    submodules/cutlass/include
 )
 
 cuda_add_executable(
     sdfRenderer
-    volumeRender_kernel.cu
+    kernels/volumeRender_kernel.cu
     volumeRender.cpp
 )
 
-include_directories( ${GLUT_INCLUDE_DIRS} )
-target_link_libraries(sdfRenderer -lglut -lGL)
+target_link_libraries(sdfRenderer ${GLUT_LIBRARIES} ${OPENGL_LIBRARIES} ${CUDA_LIBRARIES})
