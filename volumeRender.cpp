@@ -36,13 +36,9 @@
 #include <vector_functions.h>
 #include <driver_functions.h>
 
-// CUDA utilities
-#include <helper_cuda.h>
-
 // Helper functions
 #include <helper_cuda.h>
 #include <helper_functions.h>
-#include <helper_timer.h>
 
 typedef unsigned int uint;
 typedef unsigned char uchar;
@@ -50,18 +46,6 @@ typedef unsigned char uchar;
 #define MAX_EPSILON_ERROR 5.00f
 #define THRESHOLD         0.30f
 
-// Define the files that are to be save and the reference images for validation
-const char *sOriginal[] =
-{
-    "volume.ppm",
-    NULL
-};
-
-const char *sReference[] =
-{
-    "ref_volume.ppm",
-    NULL
-};
 
 const char *sSDKsample = "CUDA 3D Volume Render";
 
