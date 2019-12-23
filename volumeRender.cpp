@@ -362,30 +362,6 @@ void initPixelBuffer()
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
-// Load raw data from disk
-void *loadRawFile(char *filename, size_t size)
-{
-    FILE *fp = fopen(filename, "rb");
-
-    if (!fp)
-    {
-        fprintf(stderr, "Error opening file '%s'\n", filename);
-        return 0;
-    }
-
-    void *data = malloc(size);
-    size_t read = fread(data, 1, size, fp);
-    fclose(fp);
-
-#if defined(_MSC_VER_)
-    printf("Read '%s', %Iu bytes\n", filename, read);
-#else
-    printf("Read '%s', %zu bytes\n", filename, read);
-#endif
-
-    return data;
-}
-
 void runSingleTest(const char *ref_file, const char *exec_path)
 {
     bool bTestResult = true;
