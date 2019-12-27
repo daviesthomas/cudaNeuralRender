@@ -914,7 +914,7 @@ typedef int (* PFNGLXWAITVIDEOSYNCSGIPROC)(int divisor, int remainder, unsigned 
 #ifndef GLX_SUN_get_transparent_index
 #define GLX_SUN_get_transparent_index 1
 
-typedef Status(* PFNGLXGETTRANSPARENTINDEXSUNPROC)(Display *dpy, Window overlay, Window underlay, unsigned long *pTransparentIndex);
+typedef cutStatus(* PFNGLXGETTRANSPARENTINDEXSUNPROC)(Display *dpy, Window overlay, Window underlay, unsigned long *pTransparentIndex);
 
 #define glXGetTransparentIndexSUN GLXEW_GET_FUN(__glewXGetTransparentIndexSUN)
 

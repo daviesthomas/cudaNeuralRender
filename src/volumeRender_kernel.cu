@@ -33,8 +33,6 @@ struct Ray
     float3 d;   // direction
 };
 
-__device__
-
 
 // intersect ray with a box
 // http://www.siggraph.org/education/materials/HyperGraph/raytrace/rtinter3.htm

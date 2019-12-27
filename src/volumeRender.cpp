@@ -36,6 +36,9 @@
 #include <vector_functions.h>
 #include <driver_functions.h>
 
+//#include <cutlass/numeric_types.h>
+#include <cutlass/cutlass.h>
+
 // Helper functions
 #include <helper_cuda.h>
 #include <helper_functions.h>
@@ -46,12 +49,12 @@ typedef unsigned char uchar;
 #define MAX_EPSILON_ERROR 5.00f
 #define THRESHOLD         0.30f
 
+enum class Atatus {
+    test, dog
+};
+
 
 const char *sSDKsample = "CUDA 3D Volume Render";
-
-//char *volumeFilename = "mrt16_angio.raw";
-//cudaExtent volumeSize = make_cudaExtent(416, 512, 112);
-//typedef unsigned short VolumeType;
 
 uint width = 512, height = 512;
 dim3 blockSize(16, 16);

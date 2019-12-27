@@ -542,9 +542,9 @@ typedef Bool(* PFNGLXQUERYMAXSWAPBARRIERSSGIXPROC)(Display *dpy, int screen, int
 #ifndef GLX_SUN_get_transparent_index
 #define GLX_SUN_get_transparent_index 1
 #ifdef GLX_GLXEXT_PROTOTYPES
-extern Status glXGetTransparentIndexSUN(Display *, Window, Window, long *);
+extern cutStatus glXGetTransparentIndexSUN(Display *, Window, Window, long *);
 #endif /* GLX_GLXEXT_PROTOTYPES */
-typedef Status(* PFNGLXGETTRANSPARENTINDEXSUNPROC)(Display *dpy, Window overlay, Window underlay, long *pTransparentIndex);
+typedef cutStatus(* PFNGLXGETTRANSPARENTINDEXSUNPROC)(Display *dpy, Window overlay, Window underlay, long *pTransparentIndex);
 #endif
 
 #ifndef GLX_MESA_copy_sub_buffer
