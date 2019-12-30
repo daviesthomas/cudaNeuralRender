@@ -34,21 +34,14 @@
 #include "layers/denseLayer.hh"
 
 typedef unsigned int uint;
-typedef unsigned char uchar;
 
-#define MAX_EPSILON_ERROR 5.00f
-#define THRESHOLD         0.30f
-
-const char *sSDKsample = "CUDA 3D Volume Render";
-
-uint width = 64, height = 64;
-dim3 blockSize(4, 4);
+uint width = 256, height = 256;
+dim3 blockSize(8, 8);
 dim3 gridSize;
 
 float3 viewRotation;
-float3 viewTranslation = make_float3(0.0, 0.0, -4.0f);
+float3 viewTranslation = make_float3(0.0, 0.0, -1.0f);
 float invViewMatrix[12];
-
 
 GLuint pbo = 0;     // OpenGL pixel buffer object
 GLuint tex = 0;     // OpenGL texture object
@@ -96,6 +89,12 @@ extern "C" void sdf_kernel(
     int numLayers);
 
 extern "C" void copyInvViewMatrix(float *invViewMatrix, size_t sizeofMatrix);
+extern "C" void copyNetworkParams(
+    float *weights, 
+    size_t sizeofWeights,
+    float *biases,
+    size_t sizeofBiases);
+
 
 void initPixelBuffer();
 
@@ -186,6 +185,7 @@ void computeFPS()
     }
 }
 
+
 // render image using CUDA
 void render()
 {
@@ -218,8 +218,6 @@ void render()
         Z.deviceData.get(),
         nn.getLayers().size()
     );
-    
-    
 
     getLastCudaError("kernel failed");
 
@@ -411,6 +409,85 @@ void cleanup()
     checkCudaErrors(cudaProfilerStop());
 }
 
+void generateSingleImage()
+{
+    uint *d_output;
+    checkCudaErrors(cudaMalloc((void **)&d_output, width*height*sizeof(uint)));
+    checkCudaErrors(cudaMemset(d_output, 0, width*height*sizeof(uint)));
+
+    float modelView[16] =
+    {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 4.0f, 1.0f
+    };
+
+    invViewMatrix[0] = modelView[0];
+    invViewMatrix[1] = modelView[4];
+    invViewMatrix[2] = modelView[8];
+    invViewMatrix[3] = modelView[12];
+    invViewMatrix[4] = modelView[1];
+    invViewMatrix[5] = modelView[5];
+    invViewMatrix[6] = modelView[9];
+    invViewMatrix[7] = modelView[13];
+    invViewMatrix[8] = modelView[2];
+    invViewMatrix[9] = modelView[6];
+    invViewMatrix[10] = modelView[10];
+    invViewMatrix[11] = modelView[14];
+
+    // call CUDA kernel, writing results to PBO
+    copyInvViewMatrix(invViewMatrix, sizeof(float4)*3);
+
+    // Start timer 0 and process n loops on the GPU
+    int nIter = 1;
+
+    for (int i = -1; i < nIter; i++)
+    {
+        if (i == 0)
+        {
+            cudaDeviceSynchronize();
+            sdkStartTimer(&timer);
+        }
+
+        render_kernel(
+            gridSize, 
+            blockSize, 
+            d_output, 
+            width, 
+            height, 
+            NetworkWeights.deviceData.get(), 
+            NetworkBiases.deviceData.get(), 
+            NetworkDims.deviceData.get(),
+            A.deviceData.get(),
+            Z.deviceData.get(),
+            nn.getLayers().size()
+        );
+    }
+
+    cudaDeviceSynchronize();
+    sdkStopTimer(&timer);
+    // Get elapsed time and throughput, then log to sample and master logs
+    double dAvgTime = sdkGetTimerValue(&timer)/(nIter * 1000.0);
+    printf("volumeRender, Throughput = %.4f MTexels/s, Time = %.5f s, Size = %u Texels, NumDevsUsed = %u, Workgroup = %u\n",
+           (1.0e-6 * width * height)/dAvgTime, dAvgTime, (width * height), 1, blockSize.x * blockSize.y);
+
+
+    getLastCudaError("Error: render_kernel() execution FAILED");
+    checkCudaErrors(cudaDeviceSynchronize());
+
+    unsigned char *h_output = (unsigned char *)malloc(width*height*4);
+    checkCudaErrors(cudaMemcpy(h_output, d_output, width*height*4, cudaMemcpyDeviceToHost));
+
+    sdkSavePPM4ub("volume.ppm", h_output, width, height);
+    
+    cudaFree(d_output);
+    free(h_output);
+    cleanup();
+
+    //exit(1);
+}
+
 void initGL(int *argc, char **argv)
 {
     // initialize GLUT callback functions
@@ -554,43 +631,36 @@ main(int argc, char **argv)
     }   
     printf("Model initialized...\n\n");
 
-    //sdf_kernel(
-     //   NetworkWeights.deviceData.get(), 
-      //  NetworkBiases.deviceData.get(), 
-       // NetworkDims.deviceData.get(),
-        //A.deviceData.get(),
-       // Z.deviceData.get(),
-       // nn.getLayers().size()
-    //);
+    gridSize = dim3(iDivUp(width, blockSize.x), iDivUp(height, blockSize.y));
 
-    //start logs
-    printf("%s Starting...\n\n", sSDKsample);
-
-    // First initialize OpenGL context, so we can properly set the GL for CUDA.
-    // This is necessary in order to achieve optimal performance with OpenGL/CUDA interop.
-    initGL(&argc, argv);
-
-    findCudaDevice(argc, (const char **)argv);
-    
     sdkCreateTimer(&timer);
+    if (true) {
+        generateSingleImage();
+    }
+    else {
+        initGL(&argc, argv);
 
-    // This is the normal rendering path for VolumeRender
-    glutDisplayFunc(display);
-    glutKeyboardFunc(keyboard);
-    glutMouseFunc(mouse);
-    glutMotionFunc(motion);
-    glutReshapeFunc(reshape);
-    glutIdleFunc(idle);
+        findCudaDevice(argc, (const char **)argv);
+    
 
-    initPixelBuffer();
+        // This is the normal rendering path for VolumeRender
+        glutDisplayFunc(display);
+        glutKeyboardFunc(keyboard);
+        glutMouseFunc(mouse);
+        glutMotionFunc(motion);
+        glutReshapeFunc(reshape);
+        glutIdleFunc(idle);
+
+        initPixelBuffer();
 
 #if defined (__APPLE__) || defined(MACOSX)
-    atexit(cleanup);
+        atexit(cleanup);
 #else
-    glutCloseFunc(cleanup);
+        glutCloseFunc(cleanup);
 #endif
 
-    glutMainLoop();
+        glutMainLoop();
+    }
 }
 
 

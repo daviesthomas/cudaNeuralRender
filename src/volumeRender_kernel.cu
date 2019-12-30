@@ -21,9 +21,7 @@
 
 #include <cuda_runtime.h>
 #include <helper_cuda.h>
-#include <cutlass/gemm/device/gemm.h>
-#include <cutlass/epilogue/thread/linear_combination_relu.h>
-#include <cutlass/gemm/device/default_gemm_configuration.h>
+
 
 typedef unsigned int  uint;
 typedef unsigned char uchar;
@@ -46,7 +44,30 @@ struct Ray
 __device__
 int intersectBox(Ray r, float3 boxmin, float3 boxmax, float *tnear, float *tfar)
 {
-    //TODO: Needs to be sphere!
+    // compute intersection of ray with all six bbox planes
+    float3 invR = make_float3(1.0f) / r.d;
+    float3 tbot = invR * (boxmin - r.o);
+    float3 ttop = invR * (boxmax - r.o);
+
+    // re-order intersections to find smallest and largest on each axis
+    float3 tmin = fminf(ttop, tbot);
+    float3 tmax = fmaxf(ttop, tbot);
+
+    // find the largest tmin and the smallest tmax
+    float largest_tmin = fmaxf(fmaxf(tmin.x, tmin.y), fmaxf(tmin.x, tmin.z));
+    float smallest_tmax = fminf(fminf(tmax.x, tmax.y), fminf(tmax.x, tmax.z));
+
+    *tnear = largest_tmin;
+    *tfar = smallest_tmax;
+
+    return smallest_tmax > largest_tmin;
+}
+
+
+// intersect ray with a box
+__device__
+int intersectSphere(Ray r, float3 boxmin, float3 boxmax, float *tnear, float *tfar)
+{
 
     // compute intersection of ray with all six bbox planes
     float3 invR = make_float3(1.0f) / r.d;
@@ -176,7 +197,8 @@ __global__ void denseForward(
     }
 }
 
-__device__ float forwardInfer(
+__device__ 
+float forwardInfer(
     float* weights, 
     float* biases, 
     float* dims, 
@@ -194,60 +216,49 @@ __device__ float forwardInfer(
         int N = int(dims[i*3+1]);
         int K = int(dims[i*3+2]);
 
-        // this is not required i just kept making too many mistakes...
-        int Wx = M;
-        int Wy = K;
-        int Ax = N;
-        int Ay = K;
-        int bx = Ax;
-        int by = Wy;
-        int Zx = Ax;
-        int Zy = Wy;
+        // just for reference...
+        //int Wx = M;
+        //int Wy = K;
+        //int Ax = N;
+        //int Ay = K;
+        //int bx = Ax;
+        //int by = Wy;
+        //int Zx = Ax;
+        //int Zy = Wy;
 
-        dim3 block_size(8, 8);
-        dim3 num_of_blocks(	(Wx + block_size.x - 1) / block_size.x,
-                            (Wy + block_size.y - 1) / block_size.y);
-
-
+        dim3 blockSize(4, 4);
+        dim3 threadsPerBlock(	(M + blockSize.x - 1) / blockSize.x,
+                                (K + blockSize.y - 1) / blockSize.y);
 
         //Dynamic parallelism. 
-        denseForward<<<block_size,num_of_blocks>>>(
+        denseForward<<<blockSize,threadsPerBlock>>>(
             weights + wPos, 
             A, 
             Z, 
             biases + bPos,
-            Wx,
-            Wy,
-            Ax,
-            Ay,
+            M,
+            K,
+            N,
+            K,
             0
         );
 
         cudaDeviceSynchronize();
 
-        dim3 bs(256);
-        dim3 numBlocks((Zy*Zx + bs.x - 1) / bs.x);
-
         if (i < (numLayers - 1)){
-            relu<<<bs,numBlocks>>>(Z, Z, Zx, Zy);
+            relu<<<1,K*N>>>(Z, A, N, K);
             cudaDeviceSynchronize();
-        }
-
-        wPos += Wx*Wy;
-        bPos += bx*by;
-
-
-        // copy Z into A for next round.
-        for (int k = 0; k < Zx*Zy; k ++) {
-            A[k] = Z[k];
+            // increment pointer to next layer of weights
+            wPos += M*K;
+            bPos += N*K;
         }
     }
     float Y = tanh(Z[0]);
 
     return Y;
-
 }
 
+//simple kernel for testing forward inference.
 __global__ void 
 inferTest(
     float* weights, 
@@ -258,14 +269,6 @@ inferTest(
     int numLayers
 ) {
     int id = 32;
-     /*
-     (-0.429754, -0.245574, -0.429754): -0.289128 
-    (-0.491149, -0.061394, -0.491149): -0.321608 
-    (-0.061393, -0.491141, -0.061393): -0.203621 
-    (-0.245570, -0.429746, -0.245570): -0.148370 
-    (0.429746, 0.245570, 0.429746): -0.096655 
-    (0.245570, 0.429746, 0.245570): -0.067753 
-*/
 
     A[id+0] = static_cast<float>(-0.245570);
     A[id+1] = static_cast<float>(-0.429746);
@@ -287,15 +290,14 @@ d_render(
     float* Z,
     int numLayers)
 {
-    const int maxSteps = 500;
+    const int maxSteps = 60;
     
     const float EPSILON = 0.00001;
-    const float3 boxMin = make_float3(-1.0f, -1.0f, -1.0f);
-    const float3 boxMax = make_float3(1.0f, 1.0f, 1.0f);
+    const float3 boxMin = make_float3(-0.5f, -0.5f, -0.5f);
+    const float3 boxMax = make_float3(0.5f, 0.5f, 0.5f);
 
     uint x = blockIdx.x*blockDim.x + threadIdx.x;
     uint y = blockIdx.y*blockDim.y + threadIdx.y;
-
     int id = x*imageW + y;
 
     if ((x >= imageW) || (y >= imageH)) return;
@@ -332,10 +334,9 @@ d_render(
         A[id*32+1] = static_cast<float>(pos.y);
         A[id*32+2] = static_cast<float>(pos.z);
 
-        tstep = -forwardInfer(weights, biases, dims, A + id*32, Z + id*32, numLayers);
-        printf("%f\n",tstep);
+        //tstep = -forwardInfer(weights, biases, dims, A + id*32, Z + id*32, numLayers);
+        tstep = distanceToSurface(pos);
 
-        //tstep = distanceToSurface(pos);
         // if close enough, we're done!
         if (tstep < EPSILON) break;
         // step along ray
@@ -350,18 +351,17 @@ d_render(
     float4 col; ;
     if (tstep < EPSILON) {
         // set color based on normals! (we'll later use matcap to look up in iamge...)
-        /*
+
         pos += eyeRay.d * tstep;
         float3 normal = fragNormal(pos);
         col.x = normal.x;
         col.y = normal.y;
         col.z = normal.z;
         col.w = 1.0;
-        */
-        col = make_float4(1.0f);
+
     } else {
         // either left the box OR reached max steps.
-        col = make_float4(0.0f);
+        col = make_float4(0.2f);
     }
 
     // write output color
@@ -383,6 +383,7 @@ void render_kernel(
     int numLayers
 )
 {
+
     d_render<<<gridSize, blockSize>>>(d_output, imageW, imageH, weights, biases, dims, A, Z, numLayers);
 }
 
@@ -404,6 +405,5 @@ void copyInvViewMatrix(float *invViewMatrix, size_t sizeofMatrix)
 {
     checkCudaErrors(cudaMemcpyToSymbol(c_invViewMatrix, invViewMatrix, sizeofMatrix));
 }
-
 
 #endif // #ifndef _VOLUMERENDER_KERNEL_CU_
