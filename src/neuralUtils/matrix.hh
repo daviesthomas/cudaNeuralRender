@@ -7,9 +7,10 @@
 #include <memory>
 
 class Matrix {
-    public:
+    private:
         bool deviceAllocated;
         bool hostAllocated;
+        bool hostOnly = false;
 
         void allocateDeviceMemory();
         void allocateHostMemory();
@@ -20,8 +21,8 @@ class Matrix {
         std::shared_ptr<float> deviceData;
         std::shared_ptr<float> hostData;
 
-        Matrix(size_t x_dim = 1, size_t y_dim = 1);
-        Matrix(Shape shape);
+        Matrix(size_t x_dim = 1, size_t y_dim = 1, bool hostOnly = false);
+        Matrix(Shape shape, bool hostOnly = false);
 
         void allocateMemory();
         void maybeAllocateMemory(Shape shape);

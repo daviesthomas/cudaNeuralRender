@@ -1,12 +1,12 @@
 #include "matrix.hh"
 
-Matrix::Matrix(size_t x_dim, size_t y_dim) :
+Matrix::Matrix(size_t x_dim, size_t y_dim, bool hostOnly) :
     shape(x_dim, y_dim), deviceData(nullptr), hostData(nullptr),
-    deviceAllocated(false), hostAllocated(false)
+    deviceAllocated(false), hostAllocated(false), hostOnly(hostOnly)
 { }
 
-Matrix::Matrix(Shape shape) :
-    Matrix(shape.x, shape.y)
+Matrix::Matrix(Shape shape, bool hostOnly) :
+    Matrix(shape.x, shape.y, hostOnly)
 { }
 
 void Matrix::allocateDeviceMemory() {
@@ -28,8 +28,12 @@ void Matrix::allocateHostMemory() {
 }
 
 void Matrix::allocateMemory() {
+
     allocateHostMemory();
-    allocateDeviceMemory();
+    
+    if (!hostOnly) {
+        allocateDeviceMemory();
+    }
 }
 
 void Matrix::maybeAllocateMemory(Shape shape) {

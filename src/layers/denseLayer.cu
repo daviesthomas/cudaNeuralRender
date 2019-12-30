@@ -7,6 +7,9 @@
 #include <cutlass/gemm/device/default_gemm_configuration.h>
 
 // KERNELS (kinda...)
+
+//TODO: fix this! This will be faster than the naive implementation below... 
+// for now I'll ignore and more forward with getting this class into volume renderer
 cudaError_t denseLayerForward(
     float* W, float* A, float* Z, float* b, 
     int Wx, int Wy, int Ax, int Ay,
@@ -14,7 +17,7 @@ cudaError_t denseLayerForward(
 
     // Aliases
     using ColumnMajor = cutlass::layout::ColumnMajor;
-    using ArchTag = cutlass::arch::Sm70;
+    using ArchTag = cutlass::arch::Sm60;
     using OpClass = cutlass::arch::OpClassSimt;
 
     // Use Gemm defaults (for now...)
@@ -49,8 +52,6 @@ cudaError_t denseLayerForward(
                         
     // Define a CUTLASS GEMM type
     CutlassGemm gemm_operator;
-
-    printf("W:(%d,%d) A:(%d,%d)\n", Wx, Wy, Ax, Ay); 
     
     // Construct the CUTLASS GEMM arguments object.
     CutlassGemm::Arguments args({Wx , Ay, Wy},  // Gemm Problem dimensions
@@ -76,7 +77,6 @@ cudaError_t denseLayerForward(
 __global__ void reluActivationForward(float* Z, float* A,
     int Z_x_dim, int Z_y_dim) 
 {
-
     int index = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (index < Z_x_dim * Z_y_dim) {
@@ -88,21 +88,20 @@ __global__ void layerForward( float* W, float* A, float* Z, float* b,
     int W_x_dim, int W_y_dim,
     int A_x_dim, int A_y_dim, int activation) 
 {
+	int row = blockIdx.y * blockDim.y + threadIdx.y;
+	int col = blockIdx.x * blockDim.x + threadIdx.x;
 
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
-
-    int Z_x_dim = A_x_dim;
-    int Z_y_dim = W_y_dim;
+	int Z_x_dim = A_x_dim;
+	int Z_y_dim = W_y_dim;
 
     float Z_value = 0;
-
-    if (row < Z_y_dim && col < Z_x_dim) {
-        for (int i = 0; i < W_x_dim; i++) {
-            Z_value += W[row * W_x_dim + i] * A[i * A_x_dim + col];
-        }
-        Z[row * Z_x_dim + col] = Z_value + b[row];
-    }
+    
+	if (row < Z_y_dim && col < Z_x_dim) {
+		for (int i = 0; i < W_x_dim; i++) {
+			Z_value += W[row * W_x_dim + i] * A[i * A_x_dim + col];
+		}
+		Z[row * Z_x_dim + col] = Z_value + b[row];
+	}
 }
 
 
@@ -111,12 +110,16 @@ DenseLayer::DenseLayer(
     std::string name, 
     std::vector<std::vector<float>> weights, 
     std::vector<float> biases,
-    int activation
+    int activation, bool hostOnly
 ) 
 {
-    this->W = Shape(weights.size(), weights[0].size());
-    this->b = Shape(biases.size(),1);
+    this->W = Matrix(Shape(weights.size(), weights[0].size()), hostOnly);
+    this->numWeightParams = weights.size() * weights[0].size();
+    this->b = Matrix(Shape(biases.size(),1), hostOnly);
+    this->numBiasParams = biases.size();
     this->name = name;
+    this->type = eDense;
+    this->hostOnly = hostOnly;
 
     b.allocateMemory();
     W.allocateMemory();
@@ -136,17 +139,22 @@ void DenseLayer::initializeBias(std::vector<float> biases) {
         b[x] = biases[x];
     }
 
-    b.copyHostToDevice();
+    if (!hostOnly) {
+        b.copyHostToDevice();
+    }
+
 }
 
 void DenseLayer::initializeWeights(std::vector<std::vector<float>> weights) {
     for (int x = 0; x < weights.size(); x++) {
         for (int y = 0; y < weights[0].size(); y ++) {
-            W[y * W.shape.x + x] = weights[x][y];
+            W[y*W.shape.x + x] = weights[x][y];
         }
     }
 
-    W.copyHostToDevice();
+    if (!hostOnly) {
+        W.copyHostToDevice();
+    }
 }
 
 Matrix& DenseLayer::forward(Matrix& A) {
@@ -158,26 +166,18 @@ Matrix& DenseLayer::forward(Matrix& A) {
 
     cudaError_t ok = computeAndStoreLayerOutput(A);
 
-    return Z;   //pointer to!
+    checkCudaErrors(ok);
+
+    return Z;   
 }
 
 cudaError_t DenseLayer::computeAndStoreLayerOutput(Matrix& A) {
-    /*
-    cudaError_t ok = denseLayerForward(    W.deviceData.get(),
-                                            A.deviceData.get(),
-                                            Z.deviceData.get(),
-                                            b.deviceData.get(),
-                                            W.shape.x, W.shape.y,
-                                            A.shape.x, A.shape.y,
-                                            this->activation
-    );        
     
-    return ok;
-    */
-
-    dim3 block_size(4, 4);
+    dim3 block_size(8, 8);
 	dim3 num_of_blocks(	(Z.shape.x + block_size.x - 1) / block_size.x,
                         (Z.shape.y + block_size.y - 1) / block_size.y);
+
+    std::cout << W.shape.x << " " <<W.shape.y <<" " <<  A.shape.x <<" " << A.shape.y << std::endl;
                         
 	layerForward<<<num_of_blocks, block_size>>>( W.deviceData.get(),
 													   A.deviceData.get(),
@@ -187,12 +187,18 @@ cudaError_t DenseLayer::computeAndStoreLayerOutput(Matrix& A) {
                                                        A.shape.x, A.shape.y,
                                                        this->activation);
 
+    Z.copyDeviceToHost();
+    printf("%f \n", Z[0]);
+
     if (activation == ReLU) {
         dim3 bs(256);
         dim3 numBlocks((Z.shape.y * Z.shape.x + block_size.x - 1) / block_size.x);
 
         reluActivationForward<<<numBlocks, bs>>>(Z.deviceData.get(), Z.deviceData.get(),Z.shape.x, Z.shape.y);
     }
+
+    Z.copyDeviceToHost();
+    printf("%f \n", Z[0]);
 
     return cudaSuccess;
 }

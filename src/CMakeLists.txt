@@ -1,5 +1,7 @@
 project(sdfRenderer LANGUAGES CXX CUDA)
 
+#https://stackoverflow.com/questions/22115197/dynamic-parallelism-undefined-reference-to-cudaregisterlinkedbinary-linking
+SET(CUDA_SEPARABLE_COMPILATION ON) 
 find_package(CUDA QUIET REQUIRED)
 find_package(GLUT REQUIRED)
 find_package(OpenGL REQUIRED)
@@ -26,6 +28,8 @@ else()
   set(CUTLASS_ENABLE_TENSOR_CORE_MMA_DEFAULT ON)
 endif()
 
+set(CUDA_NVCC_FLAGS ${CUDA_NVCC_FLAGS};-gencode arch=compute_60,code=sm_60;-rdc=true)
+
 include_directories(
   layers
   common
@@ -38,24 +42,24 @@ include_directories(
 )
 
 cuda_add_executable(
-    sdfRenderer
-    volumeRender_kernel.cu
-    volumeRender.cpp
-)
-
-set_property(TARGET sdfRenderer PROPERTY CUDA_STANDARD 11)
-
-target_link_libraries(sdfRenderer ${GLUT_LIBRARIES} ${OPENGL_LIBRARIES} ${CUDA_LIBRARIES} HighFive)
-
-cuda_add_executable(
     neuralNet
     neuralNetwork.cu
+    volumeRender_kernel.cu
     layers/denseLayer.cu
     neuralUtils/matrix.cu 
     neuralUtils/shape.cu
     main.cpp
 )
 
-set_property(TARGET neuralNet PROPERTY CUDA_STANDARD 11)
+target_link_libraries(neuralNet ${GLUT_LIBRARIES} ${OPENGL_LIBRARIES} ${CUDA_LIBRARIES} HighFive -lcudadevrt)
 
-target_link_libraries(neuralNet ${GLUT_LIBRARIES} ${OPENGL_LIBRARIES} ${CUDA_LIBRARIES} HighFive)
+cuda_add_executable(
+    simpleInfer
+    neuralNetwork.cu
+    layers/denseLayer.cu
+    neuralUtils/matrix.cu 
+    neuralUtils/shape.cu
+    simpleInfer.cpp
+)
+
+target_link_libraries(simpleInfer ${GLUT_LIBRARIES} ${OPENGL_LIBRARIES} ${CUDA_LIBRARIES} HighFive -lcudadevrt)

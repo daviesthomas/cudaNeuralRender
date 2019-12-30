@@ -17,5 +17,10 @@ class NeuralNetwork {
         Matrix forward(Matrix X);
         void addLayer(Layer *layer);
         std::vector<Layer*> getLayers() const;
+
+        // helpers for knowing number of params in model
+        int getNumWeightParams() const;
+        int getNumBiasParams() const;
+
         bool load(std::string fp);
 };

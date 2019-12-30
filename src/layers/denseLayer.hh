@@ -16,6 +16,7 @@ class DenseLayer : public Layer {
         Matrix Z;
 
         int activation;
+        bool hostOnly = false;  //toggle to skip moving to device.
 
         void initializeWeights(std::vector<std::vector<float>> weights);
         void initializeBias(std::vector<float> biases);
@@ -27,7 +28,7 @@ class DenseLayer : public Layer {
             std::string name, 
             std::vector<std::vector<float>> weights, 
             std::vector<float> biases,
-            int activation
+            int activation, bool hostOnly = false
         );
 
         ~DenseLayer();
