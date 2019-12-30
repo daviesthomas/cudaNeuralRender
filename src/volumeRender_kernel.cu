@@ -16,6 +16,14 @@
 
 #include <helper_cuda.h>
 #include <helper_math.h>
+#include "neuralNetwork.hh"
+#include "layers/denseLayer.hh"
+
+#include <cuda_runtime.h>
+#include <helper_cuda.h>
+#include <cutlass/gemm/device/gemm.h>
+#include <cutlass/epilogue/thread/linear_combination_relu.h>
+#include <cutlass/gemm/device/default_gemm_configuration.h>
 
 typedef unsigned int  uint;
 typedef unsigned char uchar;
@@ -35,8 +43,6 @@ struct Ray
 
 
 // intersect ray with a box
-// http://www.siggraph.org/education/materials/HyperGraph/raytrace/rtinter3.htm
-
 __device__
 int intersectBox(Ray r, float3 boxmin, float3 boxmax, float *tnear, float *tfar)
 {
@@ -96,8 +102,6 @@ __device__ uint rgbaFloatToInt(float4 rgba)
 // given a point return distance to surface
 __device__ float distanceToSurface(float3 pos)
 {
-    //For now just a sphere primitive, but this is where inference will live!
-    // Sphere
 	const float radius = 0.5f;
     return length(pos)-radius;
 }
@@ -137,9 +141,151 @@ __device__ float3 fragNormal(float3 p)
     return normalize(n);
 }
 
+__global__ void relu(float* Z, float* A,
+    int Z_x_dim, int Z_y_dim) 
+{
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (index < Z_x_dim * Z_y_dim) {
+        A[index] = fmaxf(Z[index], 0);
+    }
+}
+
+__global__ void denseForward(
+    float* W, 
+    float* A,
+    float* Z, 
+    float* b,
+    int W_x_dim, int W_y_dim,
+    int A_x_dim, int A_y_dim, int activation) 
+{
+
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    int Z_x_dim = A_x_dim;
+    int Z_y_dim = W_y_dim;
+
+    float Z_value = 0;
+
+    if (row < Z_y_dim && col < Z_x_dim) {
+        for (int i = 0; i < W_x_dim; i++) {
+            Z_value += W[row * W_x_dim + i] * A[i * A_x_dim + col];
+        }
+        Z[row * Z_x_dim + col] = Z_value + b[row];
+    }
+}
+
+__device__ float forwardInfer(
+    float* weights, 
+    float* biases, 
+    float* dims, 
+    float* A,
+    float* Z,
+    int numLayers
+) 
+{    
+    // position in mem for each layers weights and biases.
+    int wPos = 0;
+    int bPos = 0;
+    
+    for (int i = 0; i < numLayers; i ++) {
+        int M = int(dims[i*3]);
+        int N = int(dims[i*3+1]);
+        int K = int(dims[i*3+2]);
+
+        // this is not required i just kept making too many mistakes...
+        int Wx = M;
+        int Wy = K;
+        int Ax = N;
+        int Ay = K;
+        int bx = Ax;
+        int by = Wy;
+        int Zx = Ax;
+        int Zy = Wy;
+
+        dim3 block_size(8, 8);
+        dim3 num_of_blocks(	(Wx + block_size.x - 1) / block_size.x,
+                            (Wy + block_size.y - 1) / block_size.y);
+
+
+
+        //Dynamic parallelism. 
+        denseForward<<<block_size,num_of_blocks>>>(
+            weights + wPos, 
+            A, 
+            Z, 
+            biases + bPos,
+            Wx,
+            Wy,
+            Ax,
+            Ay,
+            0
+        );
+
+        cudaDeviceSynchronize();
+
+        dim3 bs(256);
+        dim3 numBlocks((Zy*Zx + bs.x - 1) / bs.x);
+
+        if (i < (numLayers - 1)){
+            relu<<<bs,numBlocks>>>(Z, Z, Zx, Zy);
+            cudaDeviceSynchronize();
+        }
+
+        wPos += Wx*Wy;
+        bPos += bx*by;
+
+
+        // copy Z into A for next round.
+        for (int k = 0; k < Zx*Zy; k ++) {
+            A[k] = Z[k];
+        }
+    }
+    float Y = tanh(Z[0]);
+
+    return Y;
+
+}
+
+__global__ void 
+inferTest(
+    float* weights, 
+    float* biases, 
+    float* dims,
+    float* A,
+    float* Z,
+    int numLayers
+) {
+    int id = 32;
+     /*
+     (-0.429754, -0.245574, -0.429754): -0.289128 
+    (-0.491149, -0.061394, -0.491149): -0.321608 
+    (-0.061393, -0.491141, -0.061393): -0.203621 
+    (-0.245570, -0.429746, -0.245570): -0.148370 
+    (0.429746, 0.245570, 0.429746): -0.096655 
+    (0.245570, 0.429746, 0.245570): -0.067753 
+*/
+
+    A[id+0] = static_cast<float>(-0.245570);
+    A[id+1] = static_cast<float>(-0.429746);
+    A[id+2] = static_cast<float>( -0.245570);
+    float tstep = forwardInfer(weights, biases, dims, A+id, Z+id, numLayers);
+    printf("tstep: %f \n", tstep);
+}
+
 
 __global__ void
-d_render(uint *d_output, uint imageW, uint imageH)
+d_render(
+    uint *d_output, 
+    uint imageW, 
+    uint imageH, 
+    float* weights, 
+    float* biases, 
+    float* dims,
+    float* A,
+    float* Z,
+    int numLayers)
 {
     const int maxSteps = 500;
     
@@ -149,6 +295,8 @@ d_render(uint *d_output, uint imageW, uint imageH)
 
     uint x = blockIdx.x*blockDim.x + threadIdx.x;
     uint y = blockIdx.y*blockDim.y + threadIdx.y;
+
+    int id = x*imageW + y;
 
     if ((x >= imageW) || (y >= imageH)) return;
 
@@ -165,7 +313,7 @@ d_render(uint *d_output, uint imageW, uint imageH)
     float tnear, tfar;
     int hit = intersectBox(eyeRay, boxMin, boxMax, &tnear, &tfar);
 
-    // no need to march if ray never hits box!
+    // no need to march if ray never hits sphere!
     if (!hit) return;
 
     if (tnear < 0.0f) tnear = 0.0f;     // clamp to near plane
@@ -180,7 +328,14 @@ d_render(uint *d_output, uint imageW, uint imageH)
     for (int i=0; i<maxSteps; i++)
     {
         // get dist to surface
-        tstep = distanceToSurface(pos);
+        A[id*32+0] = static_cast<float>(pos.x);
+        A[id*32+1] = static_cast<float>(pos.y);
+        A[id*32+2] = static_cast<float>(pos.z);
+
+        tstep = -forwardInfer(weights, biases, dims, A + id*32, Z + id*32, numLayers);
+        printf("%f\n",tstep);
+
+        //tstep = distanceToSurface(pos);
         // if close enough, we're done!
         if (tstep < EPSILON) break;
         // step along ray
@@ -195,12 +350,15 @@ d_render(uint *d_output, uint imageW, uint imageH)
     float4 col; ;
     if (tstep < EPSILON) {
         // set color based on normals! (we'll later use matcap to look up in iamge...)
+        /*
         pos += eyeRay.d * tstep;
         float3 normal = fragNormal(pos);
         col.x = normal.x;
         col.y = normal.y;
         col.z = normal.z;
         col.w = 1.0;
+        */
+        col = make_float4(1.0f);
     } else {
         // either left the box OR reached max steps.
         col = make_float4(0.0f);
@@ -211,9 +369,34 @@ d_render(uint *d_output, uint imageW, uint imageH)
 }
 
 extern "C"
-void render_kernel(dim3 gridSize, dim3 blockSize, uint *d_output, uint imageW, uint imageH)
+void render_kernel(
+    dim3 gridSize, 
+    dim3 blockSize, 
+    uint *d_output, 
+    uint imageW, 
+    uint imageH,
+    float* weights, 
+    float* biases, 
+    float* dims,
+    float* A,
+    float* Z,
+    int numLayers
+)
 {
-    d_render<<<gridSize, blockSize>>>(d_output, imageW, imageH);
+    d_render<<<gridSize, blockSize>>>(d_output, imageW, imageH, weights, biases, dims, A, Z, numLayers);
+}
+
+extern "C"
+void sdf_kernel(
+    float* weights, 
+    float* biases, 
+    float* dims,
+    float* A,
+    float* Z,
+    int numLayers
+)
+{
+    inferTest<<<1,1>>>(weights, biases, dims, A, Z, numLayers);
 }
 
 extern "C"
