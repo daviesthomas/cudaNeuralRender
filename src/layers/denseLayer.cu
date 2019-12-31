@@ -3,6 +3,7 @@
 #include <cuda_runtime.h>
 #include <helper_cuda.h>
 #include <cutlass/gemm/device/gemm.h>
+#include <cutlass/gemm/device/gemm_batched.h>
 #include <cutlass/epilogue/thread/linear_combination_relu.h>
 #include <cutlass/gemm/device/default_gemm_configuration.h>
 
@@ -40,19 +41,42 @@ using GemmRelu = cutlass::gemm::device::Gemm<
                                                 relu_op>;
 
 using GemmLinear = cutlass::gemm::device::Gemm<
-                                                float,        // Data-type of A matrix
-                                                RowMajor,  // Layout of A matrix
-                                                float,        // Data-type of B matrix
-                                                ColumnMajor,     // Layout of B matrix
-                                                float,        // Data-type of C matrix
-                                                ColumnMajor,     // Layout of C matrix                                                             
-                                                float,        // Element Accumulator Type
+                                                float, RowMajor,  
+                                                float, ColumnMajor,     
+                                                float, ColumnMajor,                                                                 
+                                                float,        
                                                 OpClass,
                                                 ArchTag,
                                                 DefaultConfig::ThreadblockShape, 
                                                 DefaultConfig::WarpShape, 
                                                 DefaultConfig::InstructionShape,
                                                 linear_op>;
+
+using BatchedGemmRelu = cutlass::gemm::device::GemmBatched<
+                                                float, RowMajor,
+                                                float, ColumnMajor,
+                                                float, ColumnMajor,
+                                                float,                                                 OpClass,
+                                                ArchTag,
+                                                DefaultConfig::ThreadblockShape, 
+                                                DefaultConfig::WarpShape, 
+                                                DefaultConfig::InstructionShape,
+                                                relu_op>;
+
+
+using BatchedGemmLinear = cutlass::gemm::device::GemmBatched<
+                                                float, RowMajor,
+                                                float, ColumnMajor,
+                                                float, ColumnMajor,
+                                                float,                                                 OpClass,
+                                                ArchTag,
+                                                DefaultConfig::ThreadblockShape, 
+                                                DefaultConfig::WarpShape, 
+                                                DefaultConfig::InstructionShape,
+                                                linear_op>;
+
+
+
 
 cudaError_t denseLayerForward(
     float* W, float* A, float* Z, float* b, 
@@ -63,28 +87,29 @@ cudaError_t denseLayerForward(
 
     if (activation == ReLU) {
         GemmRelu gemm;
-            // Construct the CUTLASS GEMM arguments object.
-        GemmRelu::Arguments args({M , N, K},         // Gemm Problem dimensions
-            {W, M},             // Tensor-ref for source matrix A
-            {A, K},             // Tensor-ref for source matrix B
-            {b, M},             // Tensor-ref for source matrix C
-            {Z, M},             // Tensor-ref for destination matrix D
-            {1.0f, 1.0f});     // Scalars used in the Epilogue
+        // Construct the CUTLASS GEMM arguments object.
+        GemmRelu::Arguments args({M , N, K},        // Gemm Problem dimensions
+            {W, K},                                 // ref for source matrix A
+            {A, K},                                 // ref for source matrix B
+            {b, M},                                 // ref for source matrix C
+            {Z, M},                                 // ref for destination matrix D
+            {1.0f, 1.0f});                          // Scalars used in the Epilogue
          status = gemm(args);
     } else {
         GemmLinear gemm;
-            // Construct the CUTLASS GEMM arguments object.
-        GemmLinear::Arguments args({M , N, K},         // Gemm Problem dimensions
-            {W, M},             // Tensor-ref for source matrix A
-            {A, K},             // Tensor-ref for source matrix B
-            {b, M},             // Tensor-ref for source matrix C
-            {Z, M},             // Tensor-ref for destination matrix D
-            {1.0f, 1.0f});     // Scalars used in the Epilogue
+        // Construct the CUTLASS GEMM arguments object.
+        GemmLinear::Arguments args({M , N, K},
+            {W, K},    
+            {A, K},           
+            {b, M},            
+            {Z, M},             
+            {1.0f, 1.0f});     
         status = gemm(args);
     }
           
     // Return a cudaError_t if the CUTLASS GEMM operator returned an error code.
     if (status != cutlass::cutStatus::kSuccess) {
+        printf("ERROR: %s", cutlassGetStatusString(status));
         return cudaErrorUnknown;
     }
 
@@ -99,9 +124,46 @@ cudaError_t batchedDenseLayerForward(
  {
     cutlass::cutStatus status;
 
-    if (activation == RelU) {
-        
+    if (activation == ReLU) {
+        BatchedGemmRelu batchedGemm;
+
+        status = batchedGemm({
+            {M, N, K},
+            {W, K}, 
+            0,
+            {A, K}, 
+            K,        // batch in N
+            {b, M}, 
+            0,
+            {Z, M}, 
+            M,        // stride
+            {1.0f, 1.0f},
+            numBatches
+        });
+    } else {
+        BatchedGemmLinear batchedGemm;
+
+        status = batchedGemm({
+            {M, N, K},
+            {W, K}, 
+            0,
+            {A, K}, 
+            K,        // stride
+            {b, M}, 
+            0,
+            {Z, M}, 
+            M,        // stride
+            {1.0f, 1.0f},
+            numBatches
+        });
     }
+    
+    if (status != cutlass::cutStatus::kSuccess) {
+        printf("ERROR: %s", cutlassGetStatusString(status));
+        return cudaErrorUnknown;
+    }
+
+    return cudaSuccess;
  }
 
 // Dense Layer Class imp
@@ -114,7 +176,7 @@ DenseLayer::DenseLayer(
 {
     this->W = Matrix(Shape(weights.size(), weights[0].size()), hostOnly);
     this->numWeightParams = weights.size() * weights[0].size();
-    this->b = Matrix(Shape(1,biases.size()), hostOnly); // (1,B)
+    this->b = Matrix(Shape(biases.size(), 1), hostOnly); // (1,B)
     this->numBiasParams = biases.size();
     this->name = name;
     this->type = eDense;
@@ -158,11 +220,11 @@ Matrix& DenseLayer::forward(Matrix& A) {
     assert(W.shape.x == A.shape.y);
 
     this->A = A;
-    Shape Z_shape(A.shape.x, W.shape.y);
+    Shape Z_shape(W.shape.y, A.shape.y);
+    
     Z.maybeAllocateMemory(Z_shape);
 
     cudaError_t ok = computeAndStoreLayerOutput(A);
-
     checkCudaErrors(ok);
 
     return Z;   
@@ -170,33 +232,48 @@ Matrix& DenseLayer::forward(Matrix& A) {
 
 cudaError_t DenseLayer::computeAndStoreLayerOutput(Matrix& A) {
     
-    std::cout << W.shape.x << " " <<W.shape.y <<" " <<  A.shape.x <<" " << A.shape.y << std::endl;
-    
+    printf("W: (%d, %d) --< WT: (%d, %d)\n",W.shape.x, W.shape.y, W.shape.y, W.shape.x);
+    printf("A: (%d, %d) \n",A.shape.x, A.shape.y);
+    printf("b: (%d, %d) \n",b.shape.x, b.shape.y);
+    printf("Z: (%d, %d) \n",Z.shape.x, Z.shape.y);
     cudaError_t ok;
 
-    if (A.shape.x == 1) {
+    printf("INPUT\n");
+    printf("first: ");
+    for (int i = 0; i < A.shape.y*A.shape.x; i++) {
+        printf("%f ",A[i]);
+        if (i == A.shape.x-1) {
+            printf("\nsecond:");
+        }
+    }
+    printf("\n\n");
+
+    if (false) {
         // single item
         ok = denseLayerForward(
             W.deviceData.get(), A.deviceData.get(), Z.deviceData.get(), b.deviceData.get(), 
-            W.shape.y, A.shape.y, W.shape.x, this->activation
+            W.shape.y, // transpose!
+            b.shape.y, 
+            W.shape.x, 
+            this->activation
         );
     } else {
+        printf("BATCHED INFERENCE\n");
         // batched !
         ok = batchedDenseLayerForward(
             W.deviceData.get(), A.deviceData.get(), Z.deviceData.get(), b.deviceData.get(), 
-            W.shape.y, A.shape.y, W.shape.x, this->activation, A.shape.x
+            W.shape.y,  //M
+            b.shape.y,  //N
+            W.shape.x,  //K
+            A.shape.y,  //Num Batches
+            this->activation
         );
     }
-
 
     checkCudaErrors(ok);
 
     Z.copyDeviceToHost();
 
-    for (int i =0; i < Z.shape.y*Z.shape.x; i++) {
-        printf("%f ",Z[i]);
-    }
-    printf("\n");
 
     return cudaSuccess;
 }
