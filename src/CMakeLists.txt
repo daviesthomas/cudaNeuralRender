@@ -35,6 +35,7 @@ include_directories(
   common
   neuralUtils
   ${CUDA_INCLUDE_DIRS}
+  ${CUDA_CUBLAS_DIRS}
   ${GLUT_INCLUDE_DIRS}
   ${OPENGL_INCLUDE_DIRS}
   ../submodules/cutlass/include
@@ -48,10 +49,18 @@ cuda_add_executable(
     layers/denseLayer.cu
     neuralUtils/matrix.cu 
     neuralUtils/shape.cu
+    neuralUtils/image.cu
     main.cpp
 )
 
-target_link_libraries(neuralNet ${GLUT_LIBRARIES} ${OPENGL_LIBRARIES} ${CUDA_LIBRARIES} HighFive -lcudadevrt)
+target_link_libraries(
+  neuralNet 
+  ${GLUT_LIBRARIES} 
+  ${OPENGL_LIBRARIES} 
+  ${CUDA_LIBRARIES} 
+  ${CUDA_CUBLASS_LIBRARIES} 
+  ${CUDA_cudart_static_LIBRARY}
+  HighFive)
 
 cuda_add_executable(
     simpleInfer

@@ -84,8 +84,9 @@ int main () {
     bool ok = loadModelFromH5("model.h5", nn, false);
 
     int BATCH_SIZE = 1;
-    Matrix Y;
-    Matrix X = Matrix(Shape(1,3));
+
+    Matrix Y = Matrix(Shape(BATCH_SIZE,1));
+    Matrix X = Matrix(Shape(BATCH_SIZE,3));
 
     X.allocateMemory();
 
@@ -99,8 +100,9 @@ int main () {
 
     Y.copyDeviceToHost();
 
-    for (int i=0; i< Y.shape.y; i++) {
-        printf("%f %f\n",Y[i], tanh(Y[i]));
+    for (int i=0; i< Y.shape.x; i++) {
+
+        printf("(%f %f %f): %f \n",X[0],X[1], X[2], tanh(Y[i]));
     }
 }
 

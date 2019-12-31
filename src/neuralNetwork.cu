@@ -49,6 +49,7 @@ Matrix NeuralNetwork::forward(Matrix X) {
         Z = layer->forward(Z);
     }
 
+
     Y = Z;
     return Y;
 }

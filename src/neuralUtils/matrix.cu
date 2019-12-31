@@ -1,13 +1,12 @@
 #include "matrix.hh"
 
-Matrix::Matrix(size_t x_dim, size_t y_dim, bool hostOnly, bool textureMemory) :
+Matrix::Matrix(size_t x_dim, size_t y_dim, bool hostOnly) :
     shape(x_dim, y_dim), deviceData(nullptr), hostData(nullptr),
-    deviceAllocated(false), hostAllocated(false), hostOnly(hostOnly),
-    textureMemory(textureMemory)
+    deviceAllocated(false), hostAllocated(false), hostOnly(hostOnly)
 { }
 
-Matrix::Matrix(Shape shape, bool hostOnly, bool textureMemory) :
-    Matrix(shape.x, shape.y, hostOnly, textureMemory)
+Matrix::Matrix(Shape shape, bool hostOnly) :
+    Matrix(shape.x, shape.y, hostOnly)
 { }
 
 void Matrix::allocateDeviceMemory() {
@@ -15,17 +14,10 @@ void Matrix::allocateDeviceMemory() {
         cudaError_t ok;
         float * deviceMemory = nullptr;
 
-        if (textureMemory) {
-            //pass
-        }
-        else {
-            ok = cudaMalloc(&deviceMemory, shape.x * shape.y * sizeof(float));
-            checkCudaErrors(ok);
-            deviceData = std::shared_ptr<float> (deviceMemory, [&](float* ptr){ cudaFree(ptr); });
-            deviceAllocated = true;
-        }
-
-
+        ok = cudaMalloc(&deviceMemory, shape.x * shape.y * sizeof(float));
+        checkCudaErrors(ok);
+        deviceData = std::shared_ptr<float> (deviceMemory, [&](float* ptr){ cudaFree(ptr); });
+        deviceAllocated = true;
     }
 }
 
@@ -40,7 +32,7 @@ void Matrix::allocateMemory() {
 
     allocateHostMemory();
     
-    if (!hostOnly && !textureMemory) {
+    if (!hostOnly) {
         allocateDeviceMemory();
     }
 }
