@@ -7,9 +7,10 @@
 #include <cutlass/epilogue/thread/linear_combination_relu.h>
 #include <cutlass/gemm/device/default_gemm_configuration.h>
 
+
 // Aliases
 using ColumnMajor = cutlass::layout::ColumnMajor;
-using RowMajor = cutlass::layout::RowMajor;
+using ColumnMajorTransposed = cutlass::layout::RowMajor;
 
 using ArchTag = cutlass::arch::Sm60;
 using OpClass = cutlass::arch::OpClassSimt;
@@ -25,59 +26,60 @@ using DefaultConfig = cutlass::gemm::device::DefaultGemmConfiguration<OpClass, /
                                                                 float,  // element c
                                                                 float>; // element accum
 
+using ThreadblockShape = cutlass::gemm::GemmShape<64,64,8>;
+
+
 using GemmRelu = cutlass::gemm::device::Gemm<
-                                                float,        // Data-type of A matrix
-                                                RowMajor,  // Layout of A matrix
-                                                float,        // Data-type of B matrix
-                                                ColumnMajor,     // Layout of B matrix
-                                                float,        // Data-type of C matrix
-                                                ColumnMajor,     // Layout of C matrix                                                             
-                                                float,        // Element Accumulator Type
+                                                float,                      // Data-type of A matrix
+                                                ColumnMajorTransposed,      // Layout of A matrix
+                                                float,                      // Data-type of B matrix
+                                                ColumnMajor,                // Layout of B matrix
+                                                float,                      // Data-type of C matrix
+                                                ColumnMajor,                // Layout of C matrix                                                             
+                                                float,                      // Element Accumulator Type
                                                 OpClass,
                                                 ArchTag,
-                                                DefaultConfig::ThreadblockShape, 
+                                                ThreadblockShape, 
                                                 DefaultConfig::WarpShape, 
                                                 DefaultConfig::InstructionShape,
                                                 relu_op>;
 
 using GemmLinear = cutlass::gemm::device::Gemm<
-                                                float, RowMajor,  
+                                                float, ColumnMajorTransposed,  
                                                 float, ColumnMajor,     
                                                 float, ColumnMajor,                                                                 
                                                 float,        
                                                 OpClass,
                                                 ArchTag,
-                                                DefaultConfig::ThreadblockShape, 
+                                                ThreadblockShape, 
                                                 DefaultConfig::WarpShape, 
                                                 DefaultConfig::InstructionShape,
                                                 linear_op>;
 
 using BatchedGemmRelu = cutlass::gemm::device::GemmBatched<
-                                                float, RowMajor,
+                                                float, ColumnMajorTransposed,
                                                 float, ColumnMajor,
                                                 float, ColumnMajor,
                                                 float, 
                                                 OpClass,
                                                 ArchTag,
-                                                DefaultConfig::ThreadblockShape, 
+                                                ThreadblockShape, 
                                                 DefaultConfig::WarpShape, 
                                                 DefaultConfig::InstructionShape,
                                                 relu_op>;
 
 
 using BatchedGemmLinear = cutlass::gemm::device::GemmBatched<
-                                                float, RowMajor,
+                                                float, ColumnMajorTransposed,
                                                 float, ColumnMajor,
                                                 float, ColumnMajor,
                                                 float,
                                                 OpClass,
                                                 ArchTag,
-                                                DefaultConfig::ThreadblockShape, 
+                                                ThreadblockShape, 
                                                 DefaultConfig::WarpShape, 
                                                 DefaultConfig::InstructionShape,
                                                 linear_op>;
-
-
 
 
 cudaError_t denseLayerForward(
@@ -120,10 +122,11 @@ cudaError_t denseLayerForward(
 }
 
 cudaError_t batchedDenseLayerForward(
-    float* W, float* A, float* Z, float* b, 
+    const float* W, const float* A, float* Z, const float* b, 
     int M, int N, int K, int numBatches,
     int activation)
  {
+
     cutlass::cutStatus status;
 
     if (activation == ReLU) {
@@ -166,7 +169,9 @@ cudaError_t batchedDenseLayerForward(
     }
 
     return cudaSuccess;
+
  }
+
 
 // Dense Layer Class imp
 DenseLayer::DenseLayer(
@@ -235,7 +240,7 @@ Matrix& DenseLayer::forward(Matrix& A) {
 cudaError_t DenseLayer::computeAndStoreLayerOutput(Matrix& A) {
     cudaError_t ok;
 
-    if (false) {
+    if (A.shape.y == 1) {
         // single item
         ok = denseLayerForward(
             W.deviceData.get(), A.deviceData.get(), Z.deviceData.get(), b.deviceData.get(), 
@@ -247,7 +252,7 @@ cudaError_t DenseLayer::computeAndStoreLayerOutput(Matrix& A) {
     } else {
         // batched !
         ok = batchedDenseLayerForward(
-            W.deviceData.get(), A.deviceData.get(), Z.deviceData.get(), b.deviceData.get(), 
+            (const float*)W.deviceData.get(), (const float*)A.deviceData.get(), Z.deviceData.get(), (const float*)b.deviceData.get(), 
             W.shape.y,  //M
             b.shape.y,  //N
             W.shape.x,  //K
