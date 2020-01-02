@@ -26,7 +26,8 @@ using DefaultConfig = cutlass::gemm::device::DefaultGemmConfiguration<OpClass, /
                                                                 float,  // element c
                                                                 float>; // element accum
 
-using ThreadblockShape = cutlass::gemm::GemmShape<64,64,8>;
+using ThreadblockShape = cutlass::gemm::GemmShape<32,32,8>;
+using WarpShape = cutlass::gemm::GemmShape<16,32,8>;
 
 
 using GemmRelu = cutlass::gemm::device::Gemm<
@@ -40,7 +41,7 @@ using GemmRelu = cutlass::gemm::device::Gemm<
                                                 OpClass,
                                                 ArchTag,
                                                 ThreadblockShape, 
-                                                DefaultConfig::WarpShape, 
+                                                WarpShape, 
                                                 DefaultConfig::InstructionShape,
                                                 relu_op>;
 
@@ -52,7 +53,7 @@ using GemmLinear = cutlass::gemm::device::Gemm<
                                                 OpClass,
                                                 ArchTag,
                                                 ThreadblockShape, 
-                                                DefaultConfig::WarpShape, 
+                                                WarpShape, 
                                                 DefaultConfig::InstructionShape,
                                                 linear_op>;
 
@@ -64,7 +65,7 @@ using BatchedGemmRelu = cutlass::gemm::device::GemmBatched<
                                                 OpClass,
                                                 ArchTag,
                                                 ThreadblockShape, 
-                                                DefaultConfig::WarpShape, 
+                                                WarpShape, 
                                                 DefaultConfig::InstructionShape,
                                                 relu_op>;
 
@@ -77,7 +78,7 @@ using BatchedGemmLinear = cutlass::gemm::device::GemmBatched<
                                                 OpClass,
                                                 ArchTag,
                                                 ThreadblockShape, 
-                                                DefaultConfig::WarpShape, 
+                                                WarpShape, 
                                                 DefaultConfig::InstructionShape,
                                                 linear_op>;
 
