@@ -78,7 +78,7 @@ bool loadModelFromH5 (std::string fp, NeuralNetwork& nn, bool hostOnly) {
     return true;
 }
 
-bool singleTest() {
+bool singleTest(int batchSize) {
     NeuralNetwork nn;
     bool ok = loadModelFromH5("model.h5", nn, false);
 
@@ -95,7 +95,14 @@ bool singleTest() {
 
     X.copyHostToDevice();
 
-    Y = nn.forward(X);
+    clock_t start = std::clock();
+    for (int i = 0; i < batchSize; i ++) {
+        
+        Y = nn.forward(X);
+    }
+    cudaDeviceSynchronize();
+    std::cout << "Took: " << (std::clock() - start)/(double)(CLOCKS_PER_SEC / 1000) <<" ms for "<< batchSize << " inferences\n";
+    
 
     Y.copyDeviceToHost();
 
@@ -139,11 +146,49 @@ void batchTest(int batchSize, bool doVerify) {
     }
 }
 
+void streamedBatchedTest(int batchSize, bool doVerify) {
+    NeuralNetwork nn;
+    bool ok = loadModelFromH5("model.h5", nn, false);
+
+    printf("\n\nTesting Batched inference (Batchsize: %d)\n\n", batchSize);
+    Matrix Y;
+    Matrix X = Matrix(Shape(3,batchSize));
+
+    X.allocateMemory();
+    
+    for (int i = 0; i < batchSize*3; i ++) {
+        X[i] = 0.0;
+    }
+
+    X.copyHostToDevice();
+
+    clock_t start = std::clock();
+    Y = nn.forward(X);
+    cudaDeviceSynchronize();
+
+    std::cout << "Took: " << (std::clock() - start)/(double)(CLOCKS_PER_SEC / 1000) <<" ms for "<< batchSize << " inferences\n";
+    
+    // assert that they are all the same!
+    if (doVerify) {
+        printf("Checking for errors...\n");
+        Y.copyDeviceToHost();
+        float first = Y[0];
+        for (int i = 1; i < Y.shape.y; i ++){
+            if (Y[i] != first) {
+                printf("ERROR: %f\n", Y[i]);
+                return;
+            }
+        }
+        printf("Woah there aren't any!! All evaluated (%f,%f,%f):%f\n", X[0], X[1],X[2], Y[0]);
+    }
+}
+
 int main () {
-    //singleTest();
+    //
 
     int batchSize = 1000000;
     bool doVerify = true;
+    //singleTest(batchSize);
     batchTest(batchSize, doVerify);
    
 }
