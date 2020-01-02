@@ -33,9 +33,9 @@ NeuralNetwork::NeuralNetwork()
 }
 
 NeuralNetwork::~NeuralNetwork() {
-    for (auto layer: layers) {
-        delete layer;
-    }
+    //for (auto layer: layers) {
+    //    delete layer;
+    //}
 }
 
 void NeuralNetwork::addLayer(Layer* layer) {

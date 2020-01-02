@@ -56,7 +56,8 @@ using BatchedGemmRelu = cutlass::gemm::device::GemmBatched<
                                                 float, RowMajor,
                                                 float, ColumnMajor,
                                                 float, ColumnMajor,
-                                                float,                                                 OpClass,
+                                                float, 
+                                                OpClass,
                                                 ArchTag,
                                                 DefaultConfig::ThreadblockShape, 
                                                 DefaultConfig::WarpShape, 
@@ -68,7 +69,8 @@ using BatchedGemmLinear = cutlass::gemm::device::GemmBatched<
                                                 float, RowMajor,
                                                 float, ColumnMajor,
                                                 float, ColumnMajor,
-                                                float,                                                 OpClass,
+                                                float,
+                                                OpClass,
                                                 ArchTag,
                                                 DefaultConfig::ThreadblockShape, 
                                                 DefaultConfig::WarpShape, 
@@ -109,7 +111,7 @@ cudaError_t denseLayerForward(
           
     // Return a cudaError_t if the CUTLASS GEMM operator returned an error code.
     if (status != cutlass::cutStatus::kSuccess) {
-        printf("ERROR: %s", cutlassGetStatusString(status));
+        printf("ERROR: %s\n", cutlassGetStatusString(status));
         return cudaErrorUnknown;
     }
 
@@ -159,7 +161,7 @@ cudaError_t batchedDenseLayerForward(
     }
     
     if (status != cutlass::cutStatus::kSuccess) {
-        printf("ERROR: %s", cutlassGetStatusString(status));
+        printf("ERROR: %s\n", cutlassGetStatusString(status));
         return cudaErrorUnknown;
     }
 
@@ -231,22 +233,7 @@ Matrix& DenseLayer::forward(Matrix& A) {
 }
 
 cudaError_t DenseLayer::computeAndStoreLayerOutput(Matrix& A) {
-    
-    printf("W: (%d, %d) --< WT: (%d, %d)\n",W.shape.x, W.shape.y, W.shape.y, W.shape.x);
-    printf("A: (%d, %d) \n",A.shape.x, A.shape.y);
-    printf("b: (%d, %d) \n",b.shape.x, b.shape.y);
-    printf("Z: (%d, %d) \n",Z.shape.x, Z.shape.y);
     cudaError_t ok;
-
-    printf("INPUT\n");
-    printf("first: ");
-    for (int i = 0; i < A.shape.y*A.shape.x; i++) {
-        printf("%f ",A[i]);
-        if (i == A.shape.x-1) {
-            printf("\nsecond:");
-        }
-    }
-    printf("\n\n");
 
     if (false) {
         // single item
@@ -258,7 +245,6 @@ cudaError_t DenseLayer::computeAndStoreLayerOutput(Matrix& A) {
             this->activation
         );
     } else {
-        printf("BATCHED INFERENCE\n");
         // batched !
         ok = batchedDenseLayerForward(
             W.deviceData.get(), A.deviceData.get(), Z.deviceData.get(), b.deviceData.get(), 
@@ -271,9 +257,6 @@ cudaError_t DenseLayer::computeAndStoreLayerOutput(Matrix& A) {
     }
 
     checkCudaErrors(ok);
-
-    Z.copyDeviceToHost();
-
 
     return cudaSuccess;
 }

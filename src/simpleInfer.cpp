@@ -78,21 +78,20 @@ bool loadModelFromH5 (std::string fp, NeuralNetwork& nn, bool hostOnly) {
     return true;
 }
 
-int main () {
+bool singleTest() {
     NeuralNetwork nn;
-
     bool ok = loadModelFromH5("model.h5", nn, false);
 
-    int BATCH_SIZE = 1;
+    printf("Testing single inference\n");
 
-    Matrix Y = Matrix(Shape(BATCH_SIZE,1));
-    Matrix X = Matrix(Shape(BATCH_SIZE,3));
+    Matrix Y;
+    Matrix X = Matrix(Shape(3,1));
 
     X.allocateMemory();
 
-    X[0] = static_cast<float>(0.0);
-    X[1] = static_cast<float>(0.0);
-    X[2] = static_cast<float>(0.0);
+    X[0] = static_cast<float>(0.1);
+    X[1] = static_cast<float>(0.2);
+    X[2] = static_cast<float>(0.3);
 
     X.copyHostToDevice();
 
@@ -100,9 +99,52 @@ int main () {
 
     Y.copyDeviceToHost();
 
-    for (int i=0; i< Y.shape.x; i++) {
+    printf("(%f %f %f): %f \n",X[0],X[1], X[2], tanh(Y[0]));
+}
 
-        printf("(%f %f %f): %f \n",X[0],X[1], X[2], tanh(Y[i]));
+void batchTest(int batchSize, bool doVerify) {
+    NeuralNetwork nn;
+    bool ok = loadModelFromH5("model.h5", nn, false);
+
+    printf("\n\nTesting Batched inference (Batchsize: %d)\n\n", batchSize);
+    Matrix Y;
+    Matrix X = Matrix(Shape(3,batchSize));
+
+    X.allocateMemory();
+    
+    for (int i = 0; i < batchSize*3; i ++) {
+        X[i] = 0.0;
     }
+
+    X.copyHostToDevice();
+
+    clock_t start = std::clock();
+    Y = nn.forward(X);
+    cudaDeviceSynchronize();
+
+    std::cout << "Took: " << (std::clock() - start)/(double)(CLOCKS_PER_SEC / 1000) <<" ms for "<< batchSize << " inferences\n";
+    
+    // assert that they are all the same!
+    if (doVerify) {
+        printf("Checking for errors...\n");
+        Y.copyDeviceToHost();
+        float first = Y[0];
+        for (int i = 1; i < Y.shape.y; i ++){
+            if (Y[i] != first) {
+                printf("ERROR: %f\n", Y[i]);
+                return;
+            }
+        }
+        printf("Woah there aren't any!! All evaluated (%f,%f,%f):%f\n", X[0], X[1],X[2], Y[0]);
+    }
+}
+
+int main () {
+    //singleTest();
+
+    int batchSize = 1000000;
+    bool doVerify = true;
+    batchTest(batchSize, doVerify);
+   
 }
 
