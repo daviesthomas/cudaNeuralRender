@@ -43,18 +43,19 @@ include_directories(
 )
 
 cuda_add_executable(
-    neuralNet
+    neuralSDFRenderer
     neuralNetwork.cu
     volumeRender_kernel.cu
     layers/denseLayer.cu
     neuralUtils/matrix.cu 
     neuralUtils/shape.cu
     neuralUtils/image.cu
+    
     main.cpp
 )
 
 target_link_libraries(
-  neuralNet 
+  neuralSDFRenderer 
   ${GLUT_LIBRARIES} 
   ${OPENGL_LIBRARIES} 
   ${CUDA_LIBRARIES} 
