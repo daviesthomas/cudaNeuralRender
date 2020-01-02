@@ -5,6 +5,9 @@
 #include <helper_cuda.h>
 #include <helper_functions.h>
 #include <memory>
+#include <algorithm>
+#include <png.h>
+#include "lodepng.h"
 
 class Image {
     private:
@@ -26,6 +29,8 @@ class Image {
 
         void allocateMemory();
         void maybeAllocateMemory(Shape shape);
+
+        bool loadPNG(std::string filename);
 
         void copyHostToDevice();
         void copyDeviceToHost();

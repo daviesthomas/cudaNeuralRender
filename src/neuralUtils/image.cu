@@ -1,5 +1,10 @@
 #include "image.hh"
 
+float saturatef(float x)
+{
+    return min(1.0, max(x, 0.0));
+}
+
 Image::Image(size_t x_dim, size_t y_dim, bool hostOnly) :
     shape(x_dim, y_dim), deviceData(nullptr), hostData(nullptr),
     deviceAllocated(false), hostAllocated(false), hostOnly(hostOnly)
@@ -27,6 +32,37 @@ void Image::allocateHostMemory() {
         hostData = std::shared_ptr<uint> (new uint[shape.x*shape.y], [&](uint* ptr){ delete[] ptr; });
         hostAllocated = true;
     }
+}
+
+bool Image::loadPNG(std::string filename) {
+    std::vector<unsigned char> png; 
+    unsigned w, h;
+
+    // get h and w to allocate memory
+    unsigned error = lodepng::decode(png, w, h, filename);
+
+    if (error) {
+        std::cout << "Error reading png: " << lodepng_error_text(error) << std::endl;
+        return 0;
+    }
+
+    maybeAllocateMemory(Shape((int)w,(int)h));
+
+    float r, g, b, a;
+
+    // copy into host memory.
+    for (int i = 0 ; i < png.size(); i += 4) {
+        r = saturatef(png[i]);   // clamp to [0.0, 1.0]
+        g = saturatef(png[i+1]);
+        b = saturatef(png[i+2]);
+        a = saturatef(png[i+3]);
+        hostData.get()[i/4] = (uint(a*255)<<24) | (uint(b*255)<<16) | (uint(g*255)<<8) | uint(r*255);
+    }
+
+    // copy into device memory (should be constant...)
+    copyHostToDevice();
+
+    return 1;
 }
 
 void Image::allocateMemory() {

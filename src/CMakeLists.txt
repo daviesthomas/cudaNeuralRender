@@ -50,7 +50,7 @@ cuda_add_executable(
     neuralUtils/matrix.cu 
     neuralUtils/shape.cu
     neuralUtils/image.cu
-    
+    common/lodepng.cpp
     main.cpp
 )
 
