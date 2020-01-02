@@ -35,7 +35,7 @@
 
 typedef unsigned int uint;
 
-uint width = 256, height = 256;
+uint width = 250, height = 250;
 dim3 blockSize(8, 8);
 dim3 gridSize;
 
@@ -60,6 +60,7 @@ int *pArgc;
 char **pArgv;
 
 NeuralNetwork nn;
+
 Matrix NetworkWeights, NetworkBiases, NetworkDims;  // storage of network crap
 Matrix A, Z;
 
@@ -79,6 +80,15 @@ extern "C" void render_kernel(
     float* A,
     float* Z,
     int numLayers);
+
+extern "C" void render_kernel_v2(
+    dim3 gridSize, 
+    dim3 blockSize, 
+    uint *d_output, 
+    uint imageW, 
+    uint imageH, 
+    NeuralNetwork nn
+);
 
 extern "C" void sdf_kernel(
     float* weights, 
@@ -159,7 +169,7 @@ bool loadModelFromH5 (std::string fp, NeuralNetwork& nn) {
             weights, 
             biases, 
             activation,     
-            true            // only allocate on host!
+            false            // only allocate on host!
         ));
         layerCount ++;
     }
@@ -205,6 +215,7 @@ void render()
 
     // call CUDA kernel, writing results to PBO
     
+    /*
     render_kernel(
         gridSize, 
         blockSize, 
@@ -217,6 +228,15 @@ void render()
         A.deviceData.get(),
         Z.deviceData.get(),
         nn.getLayers().size()
+    );
+    */
+    render_kernel_v2(
+        gridSize, 
+        blockSize, 
+        d_output, 
+        width, 
+        height, 
+        nn
     );
 
     getLastCudaError("kernel failed");
@@ -442,50 +462,54 @@ void generateSingleImage()
     // Start timer 0 and process n loops on the GPU
     int nIter = 1;
 
-    for (int i = -1; i < nIter; i++)
-    {
-        if (i == 0)
-        {
-            cudaDeviceSynchronize();
-            sdkStartTimer(&timer);
-        }
-
-        render_kernel(
-            gridSize, 
-            blockSize, 
-            d_output, 
-            width, 
-            height, 
-            NetworkWeights.deviceData.get(), 
-            NetworkBiases.deviceData.get(), 
-            NetworkDims.deviceData.get(),
-            A.deviceData.get(),
-            Z.deviceData.get(),
-            nn.getLayers().size()
-        );
-    }
-
     cudaDeviceSynchronize();
+    sdkStartTimer(&timer);
+
+    
+    render_kernel_v2(
+        gridSize, 
+        blockSize, 
+        d_output, 
+        width, 
+        height, 
+        nn
+    );
+    
+    /*
+    render_kernel(
+        gridSize, 
+        blockSize, 
+        d_output, 
+        width, 
+        height, 
+        NetworkWeights.deviceData.get(), 
+        NetworkBiases.deviceData.get(), 
+        NetworkDims.deviceData.get(),
+        A.deviceData.get(),
+        Z.deviceData.get(),
+        nn.getLayers().size()
+    );*/
+    
+    checkCudaErrors(cudaDeviceSynchronize());
+    getLastCudaError("Error: render_kernel() execution FAILED");
     sdkStopTimer(&timer);
+
     // Get elapsed time and throughput, then log to sample and master logs
     double dAvgTime = sdkGetTimerValue(&timer)/(nIter * 1000.0);
     printf("volumeRender, Throughput = %.4f MTexels/s, Time = %.5f s, Size = %u Texels, NumDevsUsed = %u, Workgroup = %u\n",
            (1.0e-6 * width * height)/dAvgTime, dAvgTime, (width * height), 1, blockSize.x * blockSize.y);
 
 
-    getLastCudaError("Error: render_kernel() execution FAILED");
-    checkCudaErrors(cudaDeviceSynchronize());
-
     unsigned char *h_output = (unsigned char *)malloc(width*height*4);
     checkCudaErrors(cudaMemcpy(h_output, d_output, width*height*4, cudaMemcpyDeviceToHost));
 
     sdkSavePPM4ub("volume.ppm", h_output, width, height);
-    
-    cudaFree(d_output);
-    free(h_output);
-    cleanup();
 
-    //exit(1);
+    cudaFree(d_output);
+
+    free(h_output);
+
+    cleanup();
 }
 
 void initGL(int *argc, char **argv)
@@ -634,8 +658,10 @@ main(int argc, char **argv)
     gridSize = dim3(iDivUp(width, blockSize.x), iDivUp(height, blockSize.y));
 
     sdkCreateTimer(&timer);
-    if (true) {
+    if (false) {
         generateSingleImage();
+        printf("Done!");
+        exit(0);
     }
     else {
         initGL(&argc, argv);

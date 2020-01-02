@@ -18,6 +18,14 @@
 #include <helper_math.h>
 #include "neuralNetwork.hh"
 #include "layers/denseLayer.hh"
+#include "neuralUtils/image.hh"
+
+#include <cutlass/cutlass.h>
+#include <cutlass/layout/matrix.h>
+#include <cutlass/gemm/device/gemm_batched.h>
+#include <cutlass/gemm/device/gemm.h>
+#include <cutlass/epilogue/thread/linear_combination_relu.h>
+#include <cutlass/gemm/device/default_gemm_configuration.h>
 
 #include <cuda_runtime.h>
 #include <helper_cuda.h>
@@ -334,8 +342,8 @@ d_render(
         A[id*32+1] = static_cast<float>(pos.y);
         A[id*32+2] = static_cast<float>(pos.z);
 
-        //tstep = -forwardInfer(weights, biases, dims, A + id*32, Z + id*32, numLayers);
-        tstep = distanceToSurface(pos);
+        tstep = -forwardInfer(weights, biases, dims, A + id*32, Z + id*32, numLayers);
+        //tstep = distanceToSurface(pos);
 
         // if close enough, we're done!
         if (tstep < EPSILON) break;
@@ -368,6 +376,133 @@ d_render(
     d_output[y*imageW + x] = rgbaFloatToInt(col);
 }
 
+__device__ 
+float3 getFloat3(float* D, int id) {
+    return make_float3(
+        D[id],
+        D[id + 1],
+        D[id + 2]
+    );
+}
+
+__device__ 
+void setFloat3(float* D, int id, float3 f) {
+    D[id] = f.x;
+    D[id + 1] = f.y;
+    D[id + 2] = f.z;
+}
+
+__global__ void
+initMarcher(
+    uint *d_output, 
+    uint *d_mask,
+    float *d_pos,
+    float *d_ray,
+    float *d_tfar,
+    uint imageW, 
+    uint imageH, 
+    int maxSteps
+)
+{
+    uint x = blockIdx.x*blockDim.x + threadIdx.x;
+    uint y = blockIdx.y*blockDim.y + threadIdx.y;
+
+    if ((x >= imageW) || (y >= imageH)) return;
+
+    const float3 boxMin = make_float3(-0.5f, -0.5f, -0.5f);
+    const float3 boxMax = make_float3(0.5f, 0.5f, 0.5f);
+
+    int id = y*imageW + x;
+
+    float u = (x / (float) imageW)*2.0f-1.0f;
+    float v = (y / (float) imageH)*2.0f-1.0f;
+
+    // calculate eye ray in world space
+    Ray eyeRay;
+    eyeRay.o = make_float3(mul(c_invViewMatrix, make_float4(0.0f, 0.0f, 0.0f, 1.0f)));
+    eyeRay.d = normalize(make_float3(u, v, -2.0f));
+    eyeRay.d = mul(c_invViewMatrix, eyeRay.d);
+
+    // find intersection with box
+    float tnear, tfar;
+    int hit = intersectBox(eyeRay, boxMin, boxMax, &tnear, &tfar);
+
+    d_output[id] = rgbaFloatToInt(make_float4(0.0f));
+
+    // no need to march if ray never hits sphere!
+    if (!hit) {
+        d_mask[id] = 0;
+        d_output[id] = rgbaFloatToInt(make_float4(0.0f));
+        setFloat3(d_pos, 3*id, make_float3(0.0));
+        return;
+    }
+
+    if (tnear < 0.0f) tnear = 0.0f;     // clamp to near plane
+
+    // start ray at edge of bounds
+    float3 pos = eyeRay.o + eyeRay.d*tnear;
+
+    //store starting position
+    setFloat3(d_pos, 3*id, pos);
+    //store ray (to skip comps going forward)
+    setFloat3(d_ray, 3*id, eyeRay.d);
+    //store init tlim to tfar.
+    d_tfar[id] = tfar;
+    // init mask to max steps
+    d_mask[id] = maxSteps;
+}
+
+__global__ void
+singleMarch(
+    uint* d_output,
+    uint* d_stepMask,
+    float* d_sdf,
+    float* d_pos,
+    float* d_ray,
+    float* d_tfar,
+    int imageW,
+    int imageH
+)
+{
+    const float EPSILON = 0.00001;
+
+    uint x = blockIdx.x*blockDim.x + threadIdx.x;
+    uint y = blockIdx.y*blockDim.y + threadIdx.y;
+
+    int id = y*imageW + x;
+
+    if (d_stepMask[id] == 0) return;
+
+    const float3 ray = getFloat3(d_ray, 3*id);
+    float3 pos = getFloat3(d_pos, 3*id);
+
+    const float tstep = -tanh(d_sdf[id]);
+    const float tlim = d_tfar[id] + tstep;
+
+    float3 newPos = pos + ray*tstep;
+    //printf("pos: (%0.4f, %0.4f, %0.4f) ---|%0.4f|--> (%0.4f,%0.4f,%0.4f) \n", pos.x,pos.y,pos.z,tstep,newPos.x, newPos.y, newPos.z);
+    pos = pos + ray*tstep;
+
+    // if close enough, we're done!
+    if (tstep < EPSILON) {
+        //printf("Done --> (%f, %f, %f): %f\n",pos.x,pos.y,pos.z, tstep);
+        //mask out in step mask to avoid comps
+        d_stepMask[id] = 0;
+        //now color!
+        d_output[id] = rgbaFloatToInt(make_float4(1.0f));
+    };
+
+    if (tlim <=0) {
+        //we never hit anything within box!
+        d_stepMask[id] = 0;
+        d_output[id] = rgbaFloatToInt(make_float4(0.0f));
+    }
+
+    d_tfar[id] -= tstep;
+    d_stepMask[id] -= 1;
+    setFloat3(d_pos, 3*id, pos);
+}
+
 extern "C"
 void render_kernel(
     dim3 gridSize, 
@@ -383,8 +518,65 @@ void render_kernel(
     int numLayers
 )
 {
-
     d_render<<<gridSize, blockSize>>>(d_output, imageW, imageH, weights, biases, dims, A, Z, numLayers);
+}
+
+extern "C"
+void render_kernel_v2(
+    dim3 gridSize,
+    dim3 blockSize,
+    uint *d_output, 
+    uint imageW, 
+    uint imageH,
+    NeuralNetwork& nn
+) {
+    printf("Start Render\n");
+    
+    const int MaxSteps = 60;
+
+    Matrix pos = Matrix(Shape(3, imageH*imageW));
+    Matrix ray = Matrix(Shape(3, imageH*imageW));
+    Matrix far = Matrix(Shape(1, imageH*imageW));
+
+    Matrix sdf;
+    Image stepMask = Image(Shape(imageH, imageW));
+
+    // allocate them
+    pos.allocateMemory();
+    ray.allocateMemory();
+    far.allocateMemory();
+    stepMask.allocateMemory();
+    
+    initMarcher<<<gridSize, blockSize>>> (
+        d_output, 
+        stepMask.deviceData.get(), 
+        pos.deviceData.get(), 
+        ray.deviceData.get(),
+        far.deviceData.get(),
+        imageW, 
+        imageH, 
+        MaxSteps
+    );
+
+    // march all rays simultaneossly.
+    // allows us to take advantage of batched GEMM.
+
+    for (int i = 0; i < MaxSteps; i ++) {
+        // marcher initializes the step mask and position query array.
+        sdf = nn.forward(pos);
+
+        // get steps kernel takes a single step and updates d_mask updated step count.
+        singleMarch<<<gridSize, blockSize>>>(
+            d_output,
+            stepMask.deviceData.get(), 
+            sdf.deviceData.get(), 
+            pos.deviceData.get(), 
+            ray.deviceData.get(),
+            far.deviceData.get(),
+            imageW, 
+            imageH
+        );
+    }
 }
 
 extern "C"
