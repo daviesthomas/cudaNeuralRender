@@ -170,7 +170,7 @@ __device__ float3 fragNormal(float3 p)
 }
 
 __device__ 
-float3 getFloat3(float* D, int id) {
+float3 getFloat3(const float* D, int id) {
     return make_float3(
         D[id],
         D[id + 1],
@@ -249,9 +249,9 @@ __global__ void
 singleMarch(
     uint* d_output,
     uint* d_stepMask,
-    float* d_sdf,
+    const float* d_sdf,
     float* d_pos,
-    float* d_ray,
+    const float* d_ray,
     float* d_tfar,
     int imageW,
     int imageH
@@ -262,6 +262,8 @@ singleMarch(
     uint x = blockIdx.x*blockDim.x + threadIdx.x;
     uint y = blockIdx.y*blockDim.y + threadIdx.y;
 
+    if ((x >= imageW) || (y >= imageH)) return;
+    
     int id = y*imageW + x;
 
     if (d_stepMask[id] == 0) return;
@@ -333,23 +335,20 @@ void render_kernel(
         MaxSteps
     );
 
-    // march all rays simultaneossly.
-    // allows us to take advantage of batched GEMM.
-
+    // march all rays simultaneossly. (so we can utilize batched gemm optimizations)
     for (int i = 0; i < MaxSteps; i ++) {
         // marcher initializes the step mask and position query array.
         //TODO: we currently just infer the max batch size on each iteration... this should not be the case.
         //        mask array should be used to reduce size of inference as pixels are deemed unnesary!
-        
         sdf = nn.forward(pos);
 
         // get steps kernel takes a single step and updates d_mask updated step count.
         singleMarch<<<gridSize, blockSize>>>(
             d_output,
             stepMask.deviceData.get(), 
-            sdf.deviceData.get(), 
+            (const float *)sdf.deviceData.get(), 
             pos.deviceData.get(), 
-            ray.deviceData.get(),
+            (const float *)ray.deviceData.get(),
             far.deviceData.get(),
             imageW, 
             imageH
