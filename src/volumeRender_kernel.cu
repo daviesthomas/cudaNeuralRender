@@ -263,7 +263,7 @@ singleMarch(
     uint y = blockIdx.y*blockDim.y + threadIdx.y;
 
     if ((x >= imageW) || (y >= imageH)) return;
-    
+
     int id = y*imageW + x;
 
     if (d_stepMask[id] == 0) return;
@@ -305,7 +305,8 @@ void render_kernel(
     uint *d_output, 
     uint imageW, 
     uint imageH,
-    NeuralNetwork& nn
+    NeuralNetwork& nn,
+    uint *matcap
 ) {
     printf("Start Render\n");
     
@@ -353,6 +354,9 @@ void render_kernel(
             imageW, 
             imageH
         );
+
+        // need to color image here.
+        
     }
 }
 
