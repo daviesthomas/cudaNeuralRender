@@ -35,6 +35,8 @@ class Image {
         void copyHostToDevice();
         void copyDeviceToHost();
 
+        int size() { return shape.x*shape.y; };
+
         // operator overrides for array like access
         uint& operator[](const int index);
 	    const uint& operator[](const int index) const;

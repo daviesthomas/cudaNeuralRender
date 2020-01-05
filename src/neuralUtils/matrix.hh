@@ -30,6 +30,8 @@ class Matrix {
         void copyHostToDevice();
         void copyDeviceToHost();
 
+        int size() { return shape.x*shape.y; };
+
         // operator overrides for array like access
         float& operator[](const int index);
 	    const float& operator[](const int index) const;
