@@ -32,15 +32,18 @@
 
 #include "neuralNetwork.hh"
 #include "layers/denseLayer.hh"
+#include "neuralUtils/image.hh"
 
 typedef unsigned int uint;
 
-uint width = 250, height = 250;
-dim3 blockSize(8, 8);
+bool SINGLE_IMAGE = true;
+
+uint width = 512, height = 512;
+dim3 blockSize(16, 16);
 dim3 gridSize;
 
 float3 viewRotation;
-float3 viewTranslation = make_float3(0.0, 0.0, -1.0f);
+float3 viewTranslation = make_float3(0.0, 0.0, -5.0f);
 float invViewMatrix[12];
 
 GLuint pbo = 0;     // OpenGL pixel buffer object
@@ -59,10 +62,8 @@ unsigned int frameCount = 0;
 int *pArgc;
 char **pArgv;
 
+Image matcap;
 NeuralNetwork nn;
-
-Matrix NetworkWeights, NetworkBiases, NetworkDims;  // storage of network crap
-Matrix A, Z;
 
 #ifndef MAX
 #define MAX(a,b) ((a > b) ? a : b)
@@ -74,37 +75,11 @@ extern "C" void render_kernel(
     uint *d_output, 
     uint imageW, 
     uint imageH, 
-    float* weights, 
-    float* biases, 
-    float* dims,
-    float* A,
-    float* Z,
-    int numLayers);
-
-extern "C" void render_kernel_v2(
-    dim3 gridSize, 
-    dim3 blockSize, 
-    uint *d_output, 
-    uint imageW, 
-    uint imageH, 
-    NeuralNetwork nn
+    NeuralNetwork nn,
+    uint *d_matcap
 );
 
-extern "C" void sdf_kernel(
-    float* weights, 
-    float* biases, 
-    float* dims,
-    float* A,
-    float* Z,
-    int numLayers);
-
 extern "C" void copyInvViewMatrix(float *invViewMatrix, size_t sizeofMatrix);
-extern "C" void copyNetworkParams(
-    float *weights, 
-    size_t sizeofWeights,
-    float *biases,
-    size_t sizeofBiases);
-
 
 void initPixelBuffer();
 
@@ -215,28 +190,14 @@ void render()
 
     // call CUDA kernel, writing results to PBO
     
-    /*
     render_kernel(
         gridSize, 
         blockSize, 
         d_output, 
         width, 
         height, 
-        NetworkWeights.deviceData.get(), 
-        NetworkBiases.deviceData.get(), 
-        NetworkDims.deviceData.get(),
-        A.deviceData.get(),
-        Z.deviceData.get(),
-        nn.getLayers().size()
-    );
-    */
-    render_kernel_v2(
-        gridSize, 
-        blockSize, 
-        d_output, 
-        width, 
-        height, 
-        nn
+        nn,
+        matcap.deviceData.get()
     );
 
     getLastCudaError("kernel failed");
@@ -466,29 +427,15 @@ void generateSingleImage()
     sdkStartTimer(&timer);
 
     
-    render_kernel_v2(
-        gridSize, 
-        blockSize, 
-        d_output, 
-        width, 
-        height, 
-        nn
-    );
-    
-    /*
     render_kernel(
         gridSize, 
         blockSize, 
         d_output, 
         width, 
         height, 
-        NetworkWeights.deviceData.get(), 
-        NetworkBiases.deviceData.get(), 
-        NetworkDims.deviceData.get(),
-        A.deviceData.get(),
-        Z.deviceData.get(),
-        nn.getLayers().size()
-    );*/
+        nn,
+        matcap.deviceData.get()
+    );
     
     checkCudaErrors(cudaDeviceSynchronize());
     getLastCudaError("Error: render_kernel() execution FAILED");
@@ -562,75 +509,6 @@ bool initializeSDFNetwork(std::string modelPath) {
     //load weights to our NN class.
     loadModelFromH5(modelPath, nn);
 
-    std::vector<Layer*> layers = nn.getLayers();
-
-    int numWeightParams = nn.getNumWeightParams();
-    int numBiasParams = nn.getNumBiasParams();
-
-    // init two "flat" matrices
-    //TODO: these should be allocated into constant memory if possible... maybe impossible due to mem limits (~64kb...)
-    NetworkWeights = Matrix(Shape(numWeightParams, 1));     // store all network weights
-    NetworkBiases = Matrix(Shape(numBiasParams, 1));        // stores all network biases
-    NetworkDims = Matrix(Shape(layers.size()*3, 1));        // stores tuples (M,N,K) for matmul
-
-    // sets the number of concurrent inferences. A and Z are allocated for each concurrent model.
-    //TODO: unsure what this should actually be set too... im struggling to understand actual
-    //          number of concurrent.
-    // this is an insane waste of memory atm...
-    int batchSize = height*width;
-
-    std::cout << "BatchSize: " << batchSize << std::endl;
-    
-    A = Matrix(Shape(batchSize,32));
-    Z = Matrix(Shape(batchSize,32));
-
-    NetworkWeights.allocateMemory();
-    NetworkBiases.allocateMemory();
-    NetworkDims.allocateMemory();
-    A.allocateMemory();
-    Z.allocateMemory();
-
-    int bPos = 0;
-    int wPos = 0;
-    int dPos = 0;
-
-    for (std::vector<Layer*>::iterator it = layers.begin(); it != layers.end(); ++it) {
-        if ((*it)->getType() != eDense) {
-            std::cout << "Invalid layer type detected... exiting...\n";
-            return 0;
-        }
-
-        DenseLayer* layer = static_cast<DenseLayer*>(*it);
-        
-        // copy layer weights to all weight matrix
-        Matrix wData = layer->getWeightsMatrix();
-        Shape wShape = layer->getWeightsMatrix().shape;
-        Matrix bData = layer->getBiasVector();
-        Shape bShape = layer->getBiasVector().shape;
-
-        for (int i = 0; i < wShape.x*wShape.y; i ++) {
-            NetworkWeights[wPos+i] = wData[i];
-        }
-        
-        for (int i = 0; i < bShape.x*bShape.y; i ++) {
-            NetworkBiases[bPos+i] = bData[i];
-        }
-        
-        // M, N, K
-        NetworkDims[dPos] = wShape.x;
-        NetworkDims[dPos + 1] = bShape.y;
-        NetworkDims[dPos + 2] = wShape.y;
-
-        wPos += wShape.x * wShape.y;
-        bPos += bShape.x * bShape.y;
-        dPos += 3;
-    }
-
-    // copy our flat matrices to device memory.
-    NetworkWeights.copyHostToDevice();
-    NetworkBiases.copyHostToDevice();
-    NetworkDims.copyHostToDevice();
-
     return 1;
 }
 
@@ -648,6 +526,7 @@ main(int argc, char **argv)
 #endif
 
     bool ok = initializeSDFNetwork("model.h5");
+    matcap.loadPNG("../../red.png");
     
     if (!ok) {
         printf("Failed to initialize model... exiting \n");
@@ -658,7 +537,7 @@ main(int argc, char **argv)
     gridSize = dim3(iDivUp(width, blockSize.x), iDivUp(height, blockSize.y));
 
     sdkCreateTimer(&timer);
-    if (false) {
+    if (SINGLE_IMAGE) {
         generateSingleImage();
         printf("Done!");
         exit(0);
