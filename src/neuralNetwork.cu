@@ -42,11 +42,11 @@ void NeuralNetwork::addLayer(Layer* layer) {
     this->layers.push_back(layer);
 }
 
-Matrix NeuralNetwork::forward(Matrix X) {
+Matrix NeuralNetwork::forward(Matrix X, int maxBatchSize) {
     Matrix Z = X;
 
     for (auto layer: layers) {
-        Z = layer->forward(Z);
+        Z = layer->forward(Z, maxBatchSize);
     }
 
     Y = Z;

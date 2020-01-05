@@ -33,7 +33,7 @@ class DenseLayer : public Layer {
 
         ~DenseLayer();
 
-        Matrix &forward(Matrix& A);
+        Matrix &forward(Matrix& A, int maxBatchSize = -1);
         
         int getXDim() const;
         int getYDim() const;

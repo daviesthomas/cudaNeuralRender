@@ -14,7 +14,7 @@ class NeuralNetwork {
         NeuralNetwork();
         ~NeuralNetwork();
 
-        Matrix forward(Matrix X);
+        Matrix forward(Matrix X, int maxBatchSize = -1);
         void addLayer(Layer *layer);
         std::vector<Layer*> getLayers() const;
 

@@ -224,16 +224,24 @@ void DenseLayer::initializeWeights(std::vector<std::vector<float>> weights) {
     }
 }
 
-Matrix& DenseLayer::forward(Matrix& A) {
-    assert(W.shape.x == A.shape.y);
+Matrix& DenseLayer::forward(Matrix& A, int maxBatchSize) {
+    assert(W.shape.x == A.shape.x);
 
     this->A = A;
-    Shape Z_shape(W.shape.y, A.shape.y);
+
+    Shape Z_shape;
+    if (maxBatchSize == -1) {
+        Z_shape = Shape(W.shape.y, A.shape.y);
+    } else {
+        Z_shape = Shape(W.shape.y, maxBatchSize);
+    }
     
     Z.maybeAllocateMemory(Z_shape);
 
     cudaError_t ok = computeAndStoreLayerOutput(A);
     checkCudaErrors(ok);
+
+    Z.shape.y = A.shape.y;
 
     return Z;   
 }
