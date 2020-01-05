@@ -17,7 +17,7 @@ class Layer {
 
     public:
         virtual ~Layer() = 0;
-        virtual Matrix& forward(Matrix& A) = 0;
+        virtual Matrix& forward(Matrix& A, int maxBatchSize = -1) = 0;
 
         // simple accessors
         std::string getName() { return this->name; };
