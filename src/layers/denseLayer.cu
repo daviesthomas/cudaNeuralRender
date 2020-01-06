@@ -26,8 +26,8 @@ using DefaultConfig = cutlass::gemm::device::DefaultGemmConfiguration<OpClass, /
                                                                 float,  // element c
                                                                 float>; // element accum
 
-using ThreadblockShape = cutlass::gemm::GemmShape<32,32,8>;
-using WarpShape = cutlass::gemm::GemmShape<16,32,8>;
+using ThreadblockShape = cutlass::gemm::GemmShape<8,32,8>;
+using WarpShape = cutlass::gemm::GemmShape<8,16,8>;
 
 
 using GemmRelu = cutlass::gemm::device::Gemm<
@@ -115,6 +115,7 @@ cudaError_t denseLayerForward(
     // Return a cudaError_t if the CUTLASS GEMM operator returned an error code.
     if (status != cutlass::cutStatus::kSuccess) {
         printf("ERROR: %s\n", cutlassGetStatusString(status));
+        printf("Single - M: %d N: %d K: %d\n", M,N,K);
         return cudaErrorUnknown;
     }
 
@@ -166,6 +167,7 @@ cudaError_t batchedDenseLayerForward(
     
     if (status != cutlass::cutStatus::kSuccess) {
         printf("ERROR: %s\n", cutlassGetStatusString(status));
+        printf("Batched - M: %d N: %d K: %d numBatches: %d\n", M,N,K, numBatches);
         return cudaErrorUnknown;
     }
 
