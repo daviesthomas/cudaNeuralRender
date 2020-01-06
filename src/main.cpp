@@ -36,14 +36,14 @@
 
 typedef unsigned int uint;
 
-bool SINGLE_IMAGE = true;
+bool SINGLE_IMAGE = false;
 
-uint width = 512, height = 512;
-dim3 blockSize(16, 16);
+uint width = 1024, height = 1024;
+dim3 blockSize(8, 8);
 dim3 gridSize;
 
 float3 viewRotation;
-float3 viewTranslation = make_float3(0.0, 0.0, -5.0f);
+float3 viewTranslation = make_float3(0.0, 0.0, -8.0f);
 float invViewMatrix[12];
 
 GLuint pbo = 0;     // OpenGL pixel buffer object
@@ -183,7 +183,6 @@ void render()
     size_t num_bytes;
     checkCudaErrors(cudaGraphicsResourceGetMappedPointer((void **)&d_output, &num_bytes,
                                                          cuda_pbo_resource));
-    //printf("CUDA mapped PBO: May access %ld bytes\n", num_bytes);
 
     // clear image
     checkCudaErrors(cudaMemset(d_output, 0, width*height*4));
@@ -243,15 +242,8 @@ void display()
     glDisable(GL_DEPTH_TEST);
 
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-#if 0
-    // draw using glDrawPixels (slower)
-    glRasterPos2i(0, 0);
-    glBindBuffer(GL_PIXEL_UNPACK_BUFFER_ARB, pbo);
-    glDrawPixels(width, height, GL_RGBA, GL_UNSIGNED_BYTE, 0);
-    glBindBuffer(GL_PIXEL_UNPACK_BUFFER_ARB, 0);
-#else
-    // draw using texture
 
+    // draw using texture
     // copy from pbo to texture
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER_ARB, pbo);
     glBindTexture(GL_TEXTURE_2D, tex);
@@ -273,7 +265,6 @@ void display()
 
     glDisable(GL_TEXTURE_2D);
     glBindTexture(GL_TEXTURE_2D, 0);
-#endif
 
     glutSwapBuffers();
     glutReportErrors();
