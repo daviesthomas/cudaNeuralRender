@@ -39,6 +39,7 @@
 #include <thrust/transform_scan.h>
 #include <thrust/iterator/zip_iterator.h>
 #include <thrust/tuple.h>
+#include <thrust/iterator/transform_iterator.h>
 
 
 typedef unsigned int  uint;
@@ -57,6 +58,9 @@ struct Ray
     float3 d;   // direction
 };
 
+const int COLOR_MASK_VAL = 2;
+const float EPSILON = 0.0001;
+const int MAX_STEPS = 100;
 
 // intersect ray with a box
 __device__
@@ -255,8 +259,25 @@ initMarcher(
     d_mask[id] = 1;
 }
 
-__device__ uint fragColor(int idx, const float * d_sdf) {
-    return rgbaFloatToInt(make_float4(1.0f));
+__device__ uint fragColor(int idx, const float * d_sdf, const uint* d_matcap, const uint offset) {
+    float3 normal_eye;
+
+    //printf("%d:%0.4f  %d:%0.4f  %d:%0.4f  %d:%0.4f %d:%0.4f  %d:%0.4f \n", idx,  d_sdf[idx], offset, d_sdf[offset],  offset+1, d_sdf[offset+1], offset+2, d_sdf[offset+2], offset+3, d_sdf[offset+3], offset+4, d_sdf[offset+4]);
+    normal_eye.x = d_sdf[idx] - d_sdf[offset];
+    normal_eye.y = d_sdf[offset + 1] - d_sdf[offset + 2];
+    normal_eye.z = d_sdf[offset + 3] - d_sdf[offset + 4];
+    normal_eye = normalize(normal_eye);
+    
+    int uvx = (normal_eye.x * 0.5 + 0.5) * 512;
+    int uvy = (normal_eye.y * 0.5 + 0.5) * 512;
+    
+    int index = uvx * 512 + uvy;
+
+    if (index >= 515*512) {
+        printf("(%d %d): %d\n", uvx, uvy, index);
+    }
+
+    return d_matcap[index];//rgbaFloatToInt(make_float4(normal_eye.x, normal_eye.y, normal_eye.z,1.0));
 }
 
 
@@ -264,17 +285,17 @@ __global__ void
 singleMarch(
     uint* d_output,
     const uint* d_idSDFMap,
+    const int batchOffset,
     uint* d_mask,
     const float* d_sdf,
     float* d_points,
     const float* d_ray,
     float* d_tfar,
+    const uint* d_matcap,
     int imageW,
     int imageH
 )
 {
-    const float EPSILON = 0.00001;
-
     uint x = blockIdx.x*blockDim.x + threadIdx.x;
     uint y = blockIdx.y*blockDim.y + threadIdx.y;
 
@@ -285,6 +306,13 @@ singleMarch(
     if (d_mask[id] == 0) return;    // masked out
 
     int inferenceIndex = d_idSDFMap[id];
+
+    if (d_mask[id] >= COLOR_MASK_VAL) {
+        // needs to be colored.
+        d_output[id] = fragColor(inferenceIndex, d_sdf, d_matcap, d_mask[id] - COLOR_MASK_VAL);
+        d_mask[id] = 0;
+        return;
+    }
 
     const float3 ray = getFloat3(d_ray, 3*id);
     float3 point = getFloat3(d_points, 3*id);
@@ -298,33 +326,16 @@ singleMarch(
         return;
     }
 
-    //printf("Im moving: %d: (%f,%f,%f):%f  %d %f\n", id, point.x, point.y, point.z, tstep, d_mask[id], d_tfar[id]);
     // update point along ray
     point = point + ray*tstep;
-    //printf("moved: %d: (%f,%f,%f):%f \n", id, point.x, point.y, point.z, tstep);
     setFloat3(d_points, 3*id, point);
 
     // if close enough, we're done!
     if (tstep < EPSILON) {
-        d_mask[id] = 0; 
-        d_output[id] = fragColor(inferenceIndex, d_sdf);
+        d_mask[id] = COLOR_MASK_VAL;     // prep for coloring!
     };
     
 }
-
-struct countOnlyOne {
-    __device__ __host__
-    uint operator()(const uint &x) {
-        return (x == 1);
-    }
-};
-
-struct onlyCountOverOne {
-    __device__ __host__
-    uint operator()(const uint &x) {
-        return (x > 1) ? x : 0;
-    }
-};
 
 typedef thrust::tuple<int,float> IdxFloatTuple;
 typedef thrust::device_ptr<uint> DeviceImgPtr;
@@ -333,26 +344,117 @@ typedef thrust::counting_iterator<int> IndexIter;
 typedef thrust::tuple< IndexIter, DeviceMatPtr> IndexMatTuple;
 typedef thrust::zip_iterator< IndexMatTuple > IndexMatZip;
 
+struct isGt {
+    uint value;
+
+    isGt (uint val) : value(val) {};
+
+    __device__ __host__
+    uint operator()(const uint &x) {
+        return (x > value);
+    }
+};
+
 
 // since points is 3* size of mask. we need a way to know index of point we're looking at.
 //          if x we want to look at mask[i/3]
 //             y we want to look at mask[(i-1)/3]
 //             z we want to look at mask[(i-2)/3]
 // we can achieve this 'relatively' cheaply by creating a zip iterator with index.
-struct not_masked : public thrust::unary_function<IdxFloatTuple, bool>
+struct needs_normals : public thrust::unary_function<IdxFloatTuple, bool>
 {
-    not_masked(const uint* a_mask) : d_mask(a_mask) {}
-    const uint* d_mask;
+    needs_normals(DeviceImgPtr mask, const DeviceImgPtr posIdxs, const DeviceImgPtr normIdxs, const uint offset) : mask(mask), posIdxs(posIdxs), normIdxs(normIdxs), offset(offset)  {}
+
+    DeviceImgPtr mask;
+    const uint offset;
+    const DeviceImgPtr normIdxs;
+    const DeviceImgPtr posIdxs;
  
     __device__
     bool operator()(const IdxFloatTuple& x) const 
     {
         uint idx = x.get<0>();
-        uint maskIdx = (idx - idx%3)/3;
-        //printf("idx: %d maskIdx: %d  mask: %d \n", idx, maskIdx, d_mask[maskIdx]);
-        return d_mask[maskIdx];
+        float val = x.get<1>();
+        uint mapIdx, maskIdx;
+        bool isFirst = false;
+
+        if (idx >= offset) {
+            // normal point! (5 appended at end)
+            mapIdx = ((idx-offset) - (idx-offset) %15)/15;
+            maskIdx = (uint)normIdxs[mapIdx];
+            isFirst = ((idx-offset) % 15) == 0;
+        } else{
+            // pos tracking points
+            mapIdx = (idx - idx%3)/3;
+            maskIdx = (uint)posIdxs[mapIdx];
+        }
+
+        // we update mask with idx of first normal sdf result
+        if (mask[maskIdx] >= COLOR_MASK_VAL) {
+            if (isFirst) {
+                mask[maskIdx] = COLOR_MASK_VAL + idx/3;
+            }
+            return true;
+        }
+        return false;
     }
 };
+
+struct not_masked : public thrust::unary_function<IdxFloatTuple, bool>
+{
+    not_masked(const DeviceImgPtr mask) : mask(mask)  {}
+
+    const DeviceImgPtr mask;
+
+    __device__
+    bool operator()(const IdxFloatTuple& x) const 
+    {
+        uint idx = x.get<0>();
+        return (mask[(idx - idx%3)/3] > 0);
+    }
+};
+
+struct normalEstimationPrep: public thrust::unary_function<IdxFloatTuple, IdxFloatTuple>
+{
+    normalEstimationPrep(const DeviceMatPtr points, const DeviceImgPtr posIdxs, const DeviceImgPtr normIdxs, const float eps, const int offset)
+        : points(points), posIdxs(posIdxs), normIdxs(normIdxs), EPS(eps), offset(offset) {}
+
+    const int modifier[15] = {
+        -1,0,0,
+         0,1,0,
+         0,-1,0,
+         0,0,1,
+         0,0,-1
+    };
+
+    const DeviceMatPtr points;
+    const DeviceImgPtr normIdxs;
+    const DeviceImgPtr posIdxs;
+    const float EPS;
+    const uint offset;
+
+    __device__
+    IdxFloatTuple operator()(const IdxFloatTuple& x) const
+    {
+        uint idx = x.get<0>();
+        
+        uint pointIdx;
+        int modType;
+        float a;
+
+        if (idx >= offset) {
+            pointIdx = normIdxs[((idx-offset) - (idx-offset)%15)/15]*3 + idx%3;
+            modType = modifier[(idx-offset)%15];
+            a = points[pointIdx];
+        } else {
+            modType = (idx%3 == 0) ? 1 : 0;
+            a = x.get<1>();
+        }
+
+        return thrust::make_tuple(x.get<0>(), a + modType*EPS);
+    }
+};
+
 
 void printCrap(Image& idSDFMap, Image& stepMask, Matrix& points, Matrix& batch) {
     idSDFMap.copyDeviceToHost();
@@ -363,65 +465,152 @@ void printCrap(Image& idSDFMap, Image& stepMask, Matrix& points, Matrix& batch) 
     for (int i = 0; i < idSDFMap.size(); i ++) {
         int ptIdx = idSDFMap[i];
 
-        printf("%d-%d:%d:  (%f,%f,%f)&(%f,%f%f)", i, stepMask[i], idSDFMap[i], points[i*3], points[i*3 + 1], points[i*3 + 2],batch[ptIdx*3], batch[ptIdx*3 + 1], batch[ptIdx*3 + 2]);
-        if (stepMask[i]) {
-            printf(" <---");
+        if (stepMask[i] > 0) {
+            printf("%d-%d:%d:  (%f,%f,%f)&(%f,%f%f)", i, stepMask[i], idSDFMap[i], points[i*3], points[i*3 + 1], points[i*3 + 2],batch[ptIdx*3], batch[ptIdx*3 + 1], batch[ptIdx*3 + 2]);
+            if (stepMask[i] >= COLOR_MASK_VAL) {
+                printf(" <---");
+            }
+            printf("\n");
         }
-        printf("\n");
+
+        
+    }
+    printf("BATCH: \n");
+    for (int i = 0; i < batch.size()-2; i += 3) {
+        
+        printf("\t %d: (%f, %f, %f) \n", i/3, batch[i],batch[i+1],batch[i+2] );
     }
     std::cout << "\n\n";
 }
 
-int formatInferenceReqs(Image& idSDFMap, Image& stepMask, Matrix& points, Matrix& batch, int first = false) {
-    //printf("........new format....\n");
+
+/*
+Function to prep inputs for inference (gemm) by copying points to a batch buffer according to supplied mask.
+Additionally, if mask == COLOR_MASK_VAL, points for estimating the normal at surface are appended to batch.
+
+idSDFMap - Positions of points in batch (and resultant SDF array) is stored in idSDFMap
+stepMask - binary mask for which positions in image still require marching
+points   - point matrix used to track positions of all rays
+batch    - 'vector' like object, dymanically sized for number of inferences in a batch
+*/
+int formatInferenceReqs(Image& idSDFMap, Image& stepMask, Matrix& points, Matrix& batch, thrust::device_vector<uint>& tempIdxs) {
+    // This function needs heavy refactoring... Should really be done in a single kernel...
+
+    int numColorReqs = 0;
+    int numPointReqs = 0;
+
     // create thrust ptrs for compat
     DeviceImgPtr d_mask(stepMask.deviceData.get());                 // image mask. 0 if no calc needed, 1 if stepping, 2 if color calc.
     DeviceImgPtr d_idSDFMap(idSDFMap.deviceData.get());             // given id return index of sdf val and points (3*index gives index of x val, +1 == y)
-    DeviceMatPtr d_points(points.deviceData.get());                // 'vector' of points [xyzxyzxyzxyz...] 
-    DeviceMatPtr d_batch(batch.deviceData.get());
-    //thrust::device_ptr<uint> d_idNormalSDFMap(idNormalSDFMap.deviceData.get()); // map that points to first sdf value for normal calculation (note this should always be << d_mask!)
-
-    //printCrap(idSDFMap, stepMask, points,batch);
+    DeviceImgPtr d_normalIdSDFMap(idSDFMap.deviceData.get());       // given id return index of second normal point...
+    DeviceMatPtr d_points(points.deviceData.get());                 // position tracker for all possible rays in image (constant size H*W*3)
+    DeviceMatPtr d_batch(batch.deviceData.get());                   // 'vector' of positions that need sdf inference. (dynamically sized!)
 
     thrust::counting_iterator<int> idxFirst(0);
-    thrust::counting_iterator<int> idxLast = idxFirst + points.size();
-
     IndexMatZip firstPoint = thrust::make_zip_iterator(thrust::make_tuple(idxFirst, d_points));
-    IndexMatZip lastPoint = thrust::make_zip_iterator(thrust::make_tuple(idxLast, d_points + points.size()));
     IndexMatZip firstBatch = thrust::make_zip_iterator(thrust::make_tuple(idxFirst, d_batch));
 
-    // overwrite point array with unmasked data (effecitvely squashing unneeded points.)
-    int batchSize = (thrust::copy_if(
+    // Copy points required for ray marching (that need inference)
+    numPointReqs = (thrust::copy_if(
         thrust::device,
         firstPoint,
-        lastPoint,
+        firstPoint + points.size(),
         firstBatch,
-        not_masked(stepMask.deviceData.get())    
+        not_masked(d_mask)    
     ) - firstBatch)/3;
-
-    // now we want to get all instances of mask == 2 (indicates color request.)
-    // lets just increase size of points array. 
-    // each pixel can have 6 [x,y,z] pts allocated... 
-        // access to pos tracker via i*6*3
-        // access to normals via i*6*3 + 3*n (where n is index of normal to access.)
-    // then we increment idSDFMap by +1 if pos, or +6 if normal calc. Normals should be infrequent relative to pos, so not big deal.
     
-    // Prefix Scan...counting only 1s
-    thrust::transform_exclusive_scan(
-        thrust::device,
-        d_mask, 
-        d_mask + stepMask.size(), 
-        d_idSDFMap,
-        countOnlyOne(),
-        0,
-        thrust::plus<uint>()
-    );
+    if (numPointReqs > 0) {
+
+        DeviceImgPtr colorIdxs(tempIdxs.data());
+
+        // get indeces of pts marked to be colored.
+        numColorReqs = thrust::copy_if(
+            thrust::make_counting_iterator(0),
+            thrust::make_counting_iterator(stepMask.size()),
+            d_mask,
+            colorIdxs,
+            isGt(COLOR_MASK_VAL-1)
+        ) - colorIdxs;
+
+
+        // update batch with additional reqs for normal estimation
+        if (numColorReqs > 0) {
+            DeviceImgPtr pointIdxs(tempIdxs.data() + numColorReqs);
+
+            int totalPointReqs = numPointReqs + numColorReqs*5;
+
+            // get indeces of non-zero items in mask
+            thrust::copy_if(
+                thrust::make_counting_iterator(0),
+                thrust::make_counting_iterator(stepMask.size()),
+                d_mask,
+                pointIdxs,
+                isGt(0)
+            );
+    
+            // Now we append pts for normal estimation to the batch matrix.        
+            thrust::transform_if(
+                thrust::device,
+                firstBatch,
+                firstBatch + totalPointReqs*3,
+                firstBatch,
+                normalEstimationPrep(d_points,  pointIdxs, colorIdxs, EPSILON, numPointReqs*3),              // op 
+                needs_normals(d_mask, pointIdxs, colorIdxs, numPointReqs*3)   // predicate
+            );
+        }
+
+        // Prefix Scan...counting only 1s (we want to map to)
+        thrust::transform_exclusive_scan(
+            thrust::device,
+            d_mask, 
+            d_mask + stepMask.size(), 
+            d_idSDFMap,
+            isGt(0),
+            0,
+            thrust::plus<uint>()
+        );
+    }
+
+    int batchSize = numPointReqs + numColorReqs*5;
+    batch.shape.y = batchSize;
 
     //printCrap(idSDFMap, stepMask, points, batch);
-    
-    batch.shape.y = batchSize; // this is unsafe and should be checked.
 
-    return batchSize;
+    return numPointReqs;
+}
+
+
+Matrix points;
+Matrix batch;
+Matrix ray;
+Matrix far;
+Image stepMask;
+Image idSDFMap;
+thrust::device_vector<uint> *tempIdxs = NULL;    
+int prevImageSize = -1;
+
+void allocateBuffers(const int imageW, const int imageH) {
+    int imageSize = imageW*imageH;
+
+    points = Matrix(Shape(3, imageSize));
+    batch = Matrix(Shape(3*6, imageSize));
+    ray = Matrix(Shape(3, imageSize));
+    far = Matrix(Shape(1, imageSize));
+    stepMask = Image(Shape(imageH, imageW));
+    idSDFMap = Image(Shape(imageH, imageW));
+
+    if (tempIdxs != NULL){
+        delete tempIdxs;
+    }
+    tempIdxs = new thrust::device_vector<uint>(imageSize*2); 
+
+    // allocate them
+    points.allocateMemory();
+    ray.allocateMemory();
+    far.allocateMemory();
+    stepMask.allocateMemory();
+    idSDFMap.allocateMemory();
+    batch.allocateMemory();
 }
 
 extern "C"
@@ -434,28 +623,15 @@ void render_kernel(
     NeuralNetwork& nn,
     uint *matcap
 ) {
-
-    const int MaxSteps = 60;
-
     int imageSize = imageH*imageW;
-
-    Matrix points = Matrix(Shape(3, imageSize));
-    Matrix batch = Matrix(Shape(3, imageSize));
-    Matrix ray = Matrix(Shape(3, imageSize));
-    Matrix far = Matrix(Shape(1, imageSize));
+    
+    if (imageSize != prevImageSize) {
+        allocateBuffers(imageW, imageH);
+        prevImageSize = imageSize;
+    }
+    
     Matrix sdf;
-    
-    Image stepMask = Image(Shape(imageH, imageW));
-    Image idSDFMap = Image(Shape(imageH, imageW));
 
-    // allocate them
-    points.allocateMemory();
-    ray.allocateMemory();
-    far.allocateMemory();
-    stepMask.allocateMemory();
-    idSDFMap.allocateMemory();
-    batch.allocateMemory();
-    
     initMarcher<<<gridSize, blockSize>>> (
         d_output, 
         stepMask.deviceData.get(), 
@@ -464,48 +640,51 @@ void render_kernel(
         far.deviceData.get(),
         imageW, 
         imageH, 
-        MaxSteps
+        MAX_STEPS
     );
 
-    int pointsSize = points.size();
-
     // remove masked pixel (and reduce batch size if possible)
-    int batchSize = formatInferenceReqs(
+    int numPointReqs = formatInferenceReqs(
         idSDFMap,
         stepMask,
         points,
         batch,
-        true
+        *tempIdxs
     );
 
     // march all rays simultaneossly. (so we can utilize batched gemm optimizations)
-    for (int i = 0; i < MaxSteps; i ++) {   
+    for (int i = 0; i < MAX_STEPS; i ++) {   
         
-        if (batchSize == 0) break;
+        if (batch.shape.y == 0) {
+            //nothing to do!
+            break;
+        }
 
         // infer all points required
-        sdf = nn.forward(batch, imageSize);  
+        sdf = nn.forward(batch, imageSize*6);  //the x6 is too ensure memory exists if entire image needs to be colored.
 
         // take step, updating mask, points, and ray position (tfar)
         singleMarch<<<gridSize, blockSize>>>(
             d_output,
             (const uint *)idSDFMap.deviceData.get(), 
+            numPointReqs,  //batchOffset
             stepMask.deviceData.get(),
             (const float *)sdf.deviceData.get(), 
             points.deviceData.get(), 
             (const float *)ray.deviceData.get(),
             far.deviceData.get(),
+            (const uint *)matcap,
             imageW, 
             imageH
         );
 
         // remove masked pixel (and reduce batch size if possible)
-        int batchSize = formatInferenceReqs(
+        numPointReqs = formatInferenceReqs(
             idSDFMap,
             stepMask,
             points,
             batch,
-            false
+            *tempIdxs
         );
         
     }
