@@ -1,14 +1,3 @@
-/*
- * Copyright 1993-2015 NVIDIA Corporation.  All rights reserved.
- *
- * Please refer to the NVIDIA end user license agreement (EULA) associated
- * with this source code for terms and conditions that govern your use of
- * this software. Any use, reproduction, disclosure, or distribution of
- * this software and related documentation outside the terms of the EULA
- * is strictly prohibited.
- *
- */
-
 // Simple 3D volume renderer
 
 #ifndef _VOLUMERENDER_KERNEL_CU_
@@ -36,10 +25,8 @@
 #include <thrust/device_vector.h>
 #include <thrust/remove.h>
 #include <thrust/count.h>
-#include <thrust/transform_scan.h>
-#include <thrust/iterator/zip_iterator.h>
-#include <thrust/tuple.h>
-#include <thrust/iterator/transform_iterator.h>
+
+
 
 
 typedef unsigned int  uint;
