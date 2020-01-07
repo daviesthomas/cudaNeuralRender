@@ -496,6 +496,36 @@ batch    - 'vector' like object, dymanically sized for number of inferences in a
 int formatInferenceReqs(Image& idSDFMap, Image& stepMask, Matrix& points, Matrix& batch, thrust::device_vector<uint>& tempIdxs) {
     // This function needs heavy refactoring... Should really be done in a single kernel...
 
+    /*
+    // CHANGE TO THIS
+    // d_mask == 1 if step, 6 if normal. required.
+    thrust::exclusive_scan(
+        thrust::device,
+        d_mask, 
+        d_mask + stepMask.size(), 
+        d_idSDFMap,
+        0,
+        thrust::plus<uint>()
+    );
+
+    // custom kernel for copying to batch
+    // 
+    createBatch<<<blocks,threadsperblock>>> (d_idSDFMap, d_mask, d_points, d_batch);
+    // if d_mask[idx] > 0
+    //  batchIdx = d_idSDFMap[idx]
+    //  if d_mask[idx] == 1
+    //    d_batch[batchIdx:batchIdx+3] = d_point[idx:idx +3] 
+    //  if d_mask[idx] == 6
+    //    d_batch[batchIdx:batchIdx+3] = modEps( d_points[idx: idx+3], 0, 1)  
+    //    d_batch[batchIdx+3:batchIdx+6] = modEps( d_points[idx: idx+3], 0, -1) 
+    //    d_batch[batchIdx+6:batchIdx+9] = modEps( d_points[idx: idx+3], 1, 1) 
+    //    d_batch[batchIdx+9:batchIdx+12] = modEps( d_points[idx: idx+3], 1, -1) 
+    //    d_batch[batchIdx+15:batchIdx+18] = modEps( d_points[idx: idx+3], 2, 1) 
+    //    d_batch[batchIdx+18:batchIdx+21] = modEps( d_points[idx: idx+3], 2, -1) 
+
+    */
+
+    
     int numColorReqs = 0;
     int numPointReqs = 0;
 
@@ -624,7 +654,7 @@ void render_kernel(
     uint *matcap
 ) {
     int imageSize = imageH*imageW;
-    
+
     if (imageSize != prevImageSize) {
         allocateBuffers(imageW, imageH);
         prevImageSize = imageSize;
