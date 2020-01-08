@@ -1,18 +1,5 @@
-/*
- * Copyright 1993-2015 NVIDIA Corporation.  All rights reserved.
- *
- * Please refer to the NVIDIA end user license agreement (EULA) associated
- * with this source code for terms and conditions that govern your use of
- * this software. Any use, reproduction, disclosure, or distribution of
- * this software and related documentation outside the terms of the EULA
- * is strictly prohibited.
- *
- */
-
-// Simple 3D volume renderer
-
-#ifndef _VOLUMERENDER_KERNEL_CU_
-#define _VOLUMERENDER_KERNEL_CU_
+#ifndef _NEURALRENDER_KERNEL_CU_
+#define _NEURALRENDER_KERNEL_CU_
 
 #include <helper_cuda.h>
 #include <helper_math.h>
@@ -20,27 +7,10 @@
 #include "layers/denseLayer.hh"
 #include "neuralUtils/image.hh"
 
-#include <cutlass/cutlass.h>
-#include <cutlass/layout/matrix.h>
-#include <cutlass/gemm/device/gemm_batched.h>
-#include <cutlass/gemm/device/gemm.h>
-#include <cutlass/epilogue/thread/linear_combination_relu.h>
-#include <cutlass/gemm/device/default_gemm_configuration.h>
-
 #include <cuda_runtime.h>
 #include <helper_cuda.h>
 
-#include <thrust/sort.h>
-#include <thrust/device_ptr.h>
-#include <thrust/host_vector.h>
-#include <thrust/device_vector.h>
-#include <thrust/remove.h>
-#include <thrust/count.h>
-#include <thrust/transform_scan.h>
-#include <thrust/iterator/zip_iterator.h>
-#include <thrust/tuple.h>
-#include <thrust/iterator/transform_iterator.h>
-
+#include <thrust/scan.h>
 
 typedef unsigned int  uint;
 typedef unsigned char uchar;
