@@ -10,6 +10,15 @@
   #include <GL/freeglut.h>
 #endif
 
+// cwd fetch
+#ifdef WINDOWS
+    #include <direct.h>
+    #define GetCurrentDir _getcwd
+#else
+    #include <unistd.h>
+    #define GetCurrentDir getcwd
+ #endif
+
 // CUDA Runtime, Interop, and includes
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
@@ -32,9 +41,14 @@
 
 typedef unsigned int uint;
 
-bool SINGLE_IMAGE = true;
-
+// configuration options (can be set by arguments)
+std::string neuralGeometryPath;
+std::string renderSavePath;
+bool singleImage;
+std::string matcapPath;
 uint width = 1024, height = 1024;
+//////////////////////////////////////////////
+
 dim3 blockSize(8, 8);
 dim3 gridSize;
 
@@ -72,7 +86,7 @@ extern "C" void render_kernel(
     uint imageW, 
     uint imageH, 
     NeuralNetwork nn,
-    uint *d_matcap
+    Image matcap
 );
 
 extern "C" void copyInvViewMatrix(float *invViewMatrix, size_t sizeofMatrix);
@@ -125,7 +139,7 @@ void render()
         width, 
         height, 
         nn,
-        matcap.deviceData.get()
+        matcap
     );
 
     getLastCudaError("kernel failed");
@@ -296,9 +310,6 @@ void cleanup()
 {
     sdkDeleteTimer(&timer);
 
-    // removed for now, while we have no buffer to free
-    //freeCudaBuffers();
-
     if (pbo)
     {
         cudaGraphicsUnregisterResource(cuda_pbo_resource);
@@ -346,7 +357,6 @@ void generateSingleImage()
     cudaDeviceSynchronize();
     sdkStartTimer(&timer);
 
-    
     render_kernel(
         gridSize, 
         blockSize, 
@@ -354,7 +364,7 @@ void generateSingleImage()
         width, 
         height, 
         nn,
-        matcap.deviceData.get()
+        matcap
     );
     
     checkCudaErrors(cudaDeviceSynchronize());
@@ -425,6 +435,92 @@ void initPixelBuffer()
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
+void startRendering(int argc, char** argv) {
+    initGL(&argc, argv);
+
+    findCudaDevice(argc, (const char **)argv);
+
+
+    // This is the normal rendering path for VolumeRender
+    glutDisplayFunc(display);
+    glutKeyboardFunc(keyboard);
+    glutMouseFunc(mouse);
+    glutMotionFunc(motion);
+    glutReshapeFunc(reshape);
+    glutIdleFunc(idle);
+
+    initPixelBuffer();
+
+#if defined (__APPLE__) || defined(MACOSX)
+    atexit(cleanup);
+#else
+    glutCloseFunc(cleanup);
+#endif
+
+    glutMainLoop();
+}
+
+char* getCmdOption(char ** begin, char ** end, const std::string & option)
+{
+  char ** itr = std::find(begin, end, option);
+  if (itr != end && ++itr != end)
+  {
+      return *itr;
+  }
+  return 0;
+}
+
+bool cmdOptionExists(char** begin, char** end, const std::string& option)
+{
+  return std::find(begin, end, option) != end;
+}
+
+void usage() {
+    std::cout << "Usage: neuralSDFRenderer [OPTION]... -i SOURCE.h5\n";
+    std::cout << "         start interactive rendering of neuralGeometry file with default settings\n";
+    std::cout << "   or: neuralSDFRenderer [OPTION]... -i SOURCE.h5 -o DEST.ppm\n";
+    std::cout << "         render single image of neuralGeometry file and save to destination.ppm file\n";
+    std::cout << "Options\n";
+    std::cout << "\t-i input neuralGeometry path (string) default: neuralGeometries/armadillo.h5\n";
+    std::cout << "\t-o output image path (string) default: volume.ppm\n";
+    std::cout << "\t-H imageH (int)\n";
+    std::cout << "\t-W imageW (int)\n";
+    std::cout << "\t-M matcap file path (string) ( default: matcaps/blue.png )\n";
+    std::cout << "\t--single if present, only a single frame is rendered and saved. (default: false)\n";
+}
+
+void parseCmdOptions(int argc, char** argv)
+{
+    if (cmdOptionExists(argv, argv+argc, "-i")){
+        neuralGeometryPath = getCmdOption(argv, argv+argc, "-i");
+    } else {
+        neuralGeometryPath = "neuralGeometries/armadillo.h5";
+    }
+    if (cmdOptionExists(argv, argv+argc, "-o")){
+        renderSavePath = atoi(getCmdOption(argv, argv+argc, "-o"));
+    } else{
+        renderSavePath = "volume.ppm";
+    }
+    if (cmdOptionExists(argv, argv+argc, "-H")){
+        height = atoi(getCmdOption(argv, argv+argc, "-H"));
+    } else {
+        height = 512;
+    }
+    if (cmdOptionExists(argv, argv+argc, "-W")){
+        width = atoi(getCmdOption(argv, argv+argc, "-W"));
+    } else {
+        width = 512;
+    }
+    if (cmdOptionExists(argv, argv+argc, "-M")){
+        matcapPath = getCmdOption(argv, argv+argc, "-M");
+    } else {
+        matcapPath = "matcaps/blue.png";
+    }
+    if (cmdOptionExists(argv, argv+argc, "--single")) {
+        singleImage = true;
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Program main
 ////////////////////////////////////////////////////////////////////////////////
@@ -438,46 +534,29 @@ main(int argc, char **argv)
     setenv ("DISPLAY", ":0", 0);
 #endif
 
-    bool ok = nn.load("model.h5");
-    matcap.loadPNG("../../red.png");
-    
+    parseCmdOptions(argc, argv);
+
+    bool ok = nn.load(neuralGeometryPath);    
     if (!ok) {
-        printf("Failed to initialize model... exiting \n");
+        printf("Failed to initialize model (%s)... exiting \n", neuralGeometryPath.c_str());
         return 0;
     }   
     printf("Model initialized...\n\n");
 
+    ok = matcap.loadPNG(matcapPath);
+    if (!ok) {
+        printf("Failed to load matcap file (%s)... exiting \n", matcapPath.c_str());
+        return 0;
+    }
+
     gridSize = dim3(iDivUp(width, blockSize.x), iDivUp(height, blockSize.y));
 
     sdkCreateTimer(&timer);
-    if (SINGLE_IMAGE) {
+    if (singleImage) {
         generateSingleImage();
-        printf("Done!");
-        exit(0);
     }
     else {
-        initGL(&argc, argv);
-
-        findCudaDevice(argc, (const char **)argv);
-    
-
-        // This is the normal rendering path for VolumeRender
-        glutDisplayFunc(display);
-        glutKeyboardFunc(keyboard);
-        glutMouseFunc(mouse);
-        glutMotionFunc(motion);
-        glutReshapeFunc(reshape);
-        glutIdleFunc(idle);
-
-        initPixelBuffer();
-
-#if defined (__APPLE__) || defined(MACOSX)
-        atexit(cleanup);
-#else
-        glutCloseFunc(cleanup);
-#endif
-
-        glutMainLoop();
+        startRendering(argc,argv);
     }
 }
 
