@@ -44,7 +44,7 @@ include_directories(
 
 cuda_add_executable(
     neuralSDFRenderer
-    neuralNetwork.cu
+    neuralNetwork.cpp
     volumeRender_kernel.cu
     layers/denseLayer.cu
     neuralUtils/matrix.cu 
@@ -65,7 +65,7 @@ target_link_libraries(
 
 cuda_add_executable(
     simpleInfer
-    neuralNetwork.cu
+    neuralNetwork.cpp
     layers/denseLayer.cu
     neuralUtils/matrix.cu 
     neuralUtils/shape.cu

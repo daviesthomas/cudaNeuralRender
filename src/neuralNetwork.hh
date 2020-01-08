@@ -4,6 +4,8 @@
 #include <string>
 #include "layers/layer.hh"
 
+
+
 class NeuralNetwork {
     private:
         std::vector<Layer*> layers;
@@ -12,6 +14,7 @@ class NeuralNetwork {
 
     public:
         NeuralNetwork();
+        //NeuralNetwork(std::string fp);
         ~NeuralNetwork();
 
         Matrix forward(Matrix X, int maxBatchSize = -1);
@@ -22,5 +25,6 @@ class NeuralNetwork {
         int getNumWeightParams() const;
         int getNumBiasParams() const;
 
-        bool load(std::string fp);
+        bool load(std::string fp, bool hostOnly = false);
+
 };

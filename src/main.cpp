@@ -7,7 +7,7 @@
   #define glutCloseFunc glutWMCloseFunc
   #endif
 #else
-#include <GL/freeglut.h>
+  #include <GL/freeglut.h>
 #endif
 
 // CUDA Runtime, Interop, and includes
@@ -26,17 +26,13 @@
 #include <time.h>
 #include <math.h>
 
-#include <highfive/H5DataSet.hpp>
-#include <highfive/H5DataSpace.hpp>
-#include <highfive/H5File.hpp>
-
 #include "neuralNetwork.hh"
 #include "layers/denseLayer.hh"
 #include "neuralUtils/image.hh"
 
 typedef unsigned int uint;
 
-bool SINGLE_IMAGE = false;
+bool SINGLE_IMAGE = true;
 
 uint width = 1024, height = 1024;
 dim3 blockSize(8, 8);
@@ -83,73 +79,6 @@ extern "C" void copyInvViewMatrix(float *invViewMatrix, size_t sizeofMatrix);
 
 void initPixelBuffer();
 
-bool loadModelFromH5 (std::string fp, NeuralNetwork& nn) {
-    HighFive::File file(fp, HighFive::File::ReadOnly);
-
-    std::vector<std::string> kerasLayers = file.listObjectNames();
-    int layerCount = 0;
-
-    for (std::vector<std::string>::iterator it = kerasLayers.begin() ; it != kerasLayers.end(); ++it) {
-        // for each layer, copy weights to eigen
-        HighFive::ObjectType objType = file.getObjectType(*it);
-
-        if (objType != HighFive::ObjectType::Group) {
-            std::cout << "Unsupported Layer\n";
-            return false;
-        }
-
-        HighFive::Group group = file.getGroup(*it);
-        int n = group.getNumberObjects();
-        
-        if (n != 1) {
-            std::cout << "Unsupported Layer\n";
-            return false;
-        }
-
-        group = group.getGroup(*it);
-        std::vector<std::string> matNames = group.listObjectNames();
-
-        std::vector<std::vector<float>> weights;
-        std::vector<float> biases;
-
-        for (std::vector<std::string>::iterator matIt = matNames.begin(); matIt != matNames.end(); ++matIt) {
-            objType = group.getObjectType(*matIt);
-            if (objType != HighFive::ObjectType::Dataset) {
-                std::cout << "Unsupported Layer\n";
-                return false;
-            }
-
-            // parse the weights and biases
-            HighFive::DataSet dataset = group.getDataSet(*matIt);
-            std::vector<size_t> dim = dataset.getDimensions();
-
-            if (dim.size() == 1) {
-                dataset.read(biases);
-            } else if (dim.size() == 2) {
-                dataset.read(weights);
-            }
-            else {
-                std::cout << "Unsupported layer, to many dims!\n";
-                return false;
-            }
-        }
-
-        int activation = ReLU; //RELU
-        if  ((it != kerasLayers.end()) && (next(it) == kerasLayers.end())) {
-            activation = Tanh; 
-        }
-
-        nn.addLayer(new DenseLayer(
-            std::string("Dense_") + std::to_string(layerCount), 
-            weights, 
-            biases, 
-            activation,     
-            false            // only allocate on host!
-        ));
-        layerCount ++;
-    }
-    return true;
-}
 
 void computeFPS()
 {
@@ -496,13 +425,6 @@ void initPixelBuffer()
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
-bool initializeSDFNetwork(std::string modelPath) {
-    //load weights to our NN class.
-    loadModelFromH5(modelPath, nn);
-
-    return 1;
-}
-
 ////////////////////////////////////////////////////////////////////////////////
 // Program main
 ////////////////////////////////////////////////////////////////////////////////
@@ -516,7 +438,7 @@ main(int argc, char **argv)
     setenv ("DISPLAY", ":0", 0);
 #endif
 
-    bool ok = initializeSDFNetwork("model.h5");
+    bool ok = nn.load("model.h5");
     matcap.loadPNG("../../red.png");
     
     if (!ok) {
