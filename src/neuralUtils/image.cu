@@ -52,11 +52,11 @@ bool Image::loadPNG(std::string filename) {
 
     // copy into host memory.
     for (int i = 0 ; i < (png.size()/4); i ++) {
-        r = saturatef(png[i*4]);   // clamp to [0.0, 1.0]
-        g = saturatef(png[i*4+1]);
-        b = saturatef(png[i*4+2]);
-        a = saturatef(png[i*4+3]);
-        hostData.get()[i] = (uint(a*255)<<24) | (uint(b*255)<<16) | (uint(g*255)<<8) | uint(r*255);
+        r = png[i*4];   // clamp to [0.0, 1.0]
+        g = png[i*4+1];
+        b = png[i*4+2];
+        a = png[i*4+3];
+        hostData.get()[i] = (uint(a)<<24) | (uint(b)<<16) | (uint(g)<<8) | uint(r);
     }
 
     // copy into device memory (should be constant...)
