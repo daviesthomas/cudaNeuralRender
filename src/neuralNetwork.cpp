@@ -31,15 +31,20 @@ for (int i=0; i< Y.shape.y; i++) {
 }
 */
 
-NeuralNetwork::NeuralNetwork()
-{
+NeuralNetwork::NeuralNetwork(){}
 
+NeuralNetwork::NeuralNetwork(std::string geomPath){
+    bool ok = load(geomPath, false);
+    if (!ok) {
+        std::cerr << "[ERROR]: failed to load model: " << geomPath;
+        exit(1);
+    }
 }
 
 NeuralNetwork::~NeuralNetwork() {
-    //for (auto layer: layers) {
-    //    delete layer;
-    //}
+    for (auto layer: layers) {
+        delete layer;
+    }
 }
 
 void NeuralNetwork::addLayer(Layer* layer) {

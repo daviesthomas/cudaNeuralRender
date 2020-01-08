@@ -14,6 +14,7 @@ class NeuralNetwork {
 
     public:
         NeuralNetwork();
+        NeuralNetwork(std::string geomPath);
         //NeuralNetwork(std::string fp);
         ~NeuralNetwork();
 
