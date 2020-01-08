@@ -11,6 +11,8 @@
 #include <helper_cuda.h>
 
 #include <thrust/scan.h>
+#include <thrust/device_ptr.h>
+#include <thrust/host_vector.h>
 
 typedef unsigned int  uint;
 typedef unsigned char uchar;
@@ -28,55 +30,32 @@ struct Ray
     float3 d;   // direction
 };
 
+struct Sphere
+{
+    float3 c;   //center
+    float r;    //radius
+};
+
 const int COLOR_MASK_VAL = 6;
 const float EPSILON = 0.0001;
 const int MAX_STEPS = 100;
 
-// intersect ray with a box
+// intersect ray with a sphere
 __device__
-int intersectBox(Ray r, float3 boxmin, float3 boxmax, float *tnear, float *tfar)
+bool intersectSphere(Ray ray, Sphere sphere, float *tnear, float *tfar)
 {
-    // compute intersection of ray with all six bbox planes
-    float3 invR = make_float3(1.0f) / r.d;
-    float3 tbot = invR * (boxmin - r.o);
-    float3 ttop = invR * (boxmax - r.o);
+    float3 Q = ray.o - sphere.c;
+    float a = dot(ray.d, ray.d);
+    float b = 2.0 * dot(Q, ray.d);
+    float c = dot(Q,Q) - sphere.r*sphere.r;
+    float discrim = b*b - 4*a*c;
 
-    // re-order intersections to find smallest and largest on each axis
-    float3 tmin = fminf(ttop, tbot);
-    float3 tmax = fmaxf(ttop, tbot);
-
-    // find the largest tmin and the smallest tmax
-    float largest_tmin = fmaxf(fmaxf(tmin.x, tmin.y), fmaxf(tmin.x, tmin.z));
-    float smallest_tmax = fminf(fminf(tmax.x, tmax.y), fminf(tmax.x, tmax.z));
-
-    *tnear = largest_tmin;
-    *tfar = smallest_tmax;
-
-    return smallest_tmax > largest_tmin;
-}
-
-
-// intersect ray with a box
-__device__
-int intersectSphere(Ray r, float3 boxmin, float3 boxmax, float *tnear, float *tfar)
-{
-    // compute intersection of ray with all six bbox planes
-    float3 invR = make_float3(1.0f) / r.d;
-    float3 tbot = invR * (boxmin - r.o);
-    float3 ttop = invR * (boxmax - r.o);
-
-    // re-order intersections to find smallest and largest on each axis
-    float3 tmin = fminf(ttop, tbot);
-    float3 tmax = fmaxf(ttop, tbot);
-
-    // find the largest tmin and the smallest tmax
-    float largest_tmin = fmaxf(fmaxf(tmin.x, tmin.y), fmaxf(tmin.x, tmin.z));
-    float smallest_tmax = fminf(fminf(tmax.x, tmax.y), fminf(tmax.x, tmax.z));
-
-    *tnear = largest_tmin;
-    *tfar = smallest_tmax;
-
-    return smallest_tmax > largest_tmin;
+    if (discrim > 0) {
+        *tnear = (-b - sqrt(discrim)) / (2.0 * a); 
+        *tfar =  (-b + sqrt(discrim)) / (2.0 *a);
+        return true;
+    }
+    return false;
 }
 
 // transform vector by matrix (no translation)
@@ -109,48 +88,6 @@ __device__ uint rgbaFloatToInt(float4 rgba)
     rgba.z = __saturatef(rgba.z);
     rgba.w = __saturatef(rgba.w);
     return (uint(rgba.w*255)<<24) | (uint(rgba.z*255)<<16) | (uint(rgba.y*255)<<8) | uint(rgba.x*255);
-}
-
-// given a point return distance to surface
-__device__ float distanceToSurface(float3 pos)
-{
-	const float radius = 0.5f;
-    return length(pos)-radius;
-}
-
-//given a point on surface, calc & retrun normal.
-__device__ float3 fragNormal(float3 p)
-{
-    float3 n;
-    float3 a,b;
-    const float EPSILON = 0.00001;
-
-    a.x = p.x + EPSILON;
-    a.y = p.y;
-    a.z = p.z;
-
-    b.x = p.x - EPSILON;
-    b.y = p.y;
-    b.z = p.z;
-
-    n.x = distanceToSurface(a) - distanceToSurface(b);
-
-    a.x = p.x;
-    a.y = p.y + EPSILON;
-    b.x = p.x;
-    b.y = p.y - EPSILON;
-
-    n.y = distanceToSurface(a) - distanceToSurface(b);
-
-    a.y = p.y;
-    a.z = p.z + EPSILON;
-    b.y = p.y;
-    b.z = p.z - EPSILON;
-
-    n.z = distanceToSurface(a) - distanceToSurface(b);
-
-
-    return normalize(n);
 }
 
 __device__ 
@@ -200,9 +137,15 @@ initMarcher(
     eyeRay.d = normalize(make_float3(u, v, -2.0f));
     eyeRay.d = mul(c_invViewMatrix, eyeRay.d);
 
+    // With more shapes, this would be created elsewhere and passed in
+    Sphere boundingSphere;
+    boundingSphere.c = make_float3(0.0f);
+    boundingSphere.r = 0.5;
+
     // find intersection with box
     float tnear, tfar;
-    int hit = intersectBox(eyeRay, boxMin, boxMax, &tnear, &tfar);
+    //int hit = intersectBox(eyeRay, boxMin, boxMax, &tnear, &tfar);
+    bool hit = intersectSphere(eyeRay, boundingSphere, &tnear, &tfar);
 
     // no need to march if ray never hits bounding primitive
     if ( !hit ) {
@@ -232,7 +175,6 @@ initMarcher(
 __device__ uint fragColor(int idx, const float * d_sdf, const uint* d_matcap) {
     float3 normal_eye;
 
-    //printf("%d:%0.4f  %d:%0.4f  %d:%0.4f  %d:%0.4f %d:%0.4f  %d:%0.4f \n", idx,  d_sdf[idx], offset, d_sdf[offset],  offset+1, d_sdf[offset+1], offset+2, d_sdf[offset+2], offset+3, d_sdf[offset+3], offset+4, d_sdf[offset+4]);
     normal_eye.x = d_sdf[idx] - d_sdf[idx+1];
     normal_eye.y = d_sdf[idx+2] - d_sdf[idx + 3];
     normal_eye.z = d_sdf[idx + 4] - d_sdf[idx + 5];
@@ -243,11 +185,7 @@ __device__ uint fragColor(int idx, const float * d_sdf, const uint* d_matcap) {
     
     int index = uvx * 512 + uvy;
 
-    if (index >= 515*512) {
-        printf("(%d %d): %d\n", uvx, uvy, index);
-    }
-
-    return d_matcap[index];//rgbaFloatToInt(make_float4(normal_eye.x, normal_eye.y, normal_eye.z,1.0));
+    return d_matcap[index];
 }
 
 
@@ -306,6 +244,7 @@ singleMarch(
     
 }
 
+// simple function for debugging 
 void printCrap(Image& idSDFMap, Image& stepMask, Matrix& points, Matrix& batch) {
     idSDFMap.copyDeviceToHost();
     stepMask.copyDeviceToHost();
@@ -322,8 +261,6 @@ void printCrap(Image& idSDFMap, Image& stepMask, Matrix& points, Matrix& batch) 
             }
             printf("\n");
         }
-
-        
     }
     printf("BATCH: \n");
     for (int i = 0; i < batch.size()-2; i += 3) {
@@ -332,7 +269,6 @@ void printCrap(Image& idSDFMap, Image& stepMask, Matrix& points, Matrix& batch) 
     }
     std::cout << "\n\n";
 }
-
 
 __global__
 void createBatch (float* d_batch, const uint* d_idSDFMap, const uint* d_mask, const float* d_points, const int imageW, const int imageH) {
