@@ -37,8 +37,8 @@ struct Sphere
 };
 
 const int COLOR_MASK_VAL = 6;
-const float EPSILON = 0.0001;
-const int MAX_STEPS = 100;
+const float EPSILON = 0.00001;
+const int MAX_STEPS = 200;
 
 // intersect ray with a sphere
 __device__
@@ -140,7 +140,7 @@ initMarcher(
     // With more shapes, this would be created elsewhere and passed in
     Sphere boundingSphere;
     boundingSphere.c = make_float3(0.0f);
-    boundingSphere.r = 0.5;
+    boundingSphere.r = 0.9;
 
     // find intersection with box
     float tnear, tfar;
@@ -172,22 +172,29 @@ initMarcher(
     d_mask[id] = 1;
 }
 
-__device__ uint fragColor(int idx, const float * d_sdf, const uint* d_matcap) {
-    float3 normal_eye;
+__device__ uint fragColor(int id,int idx, const float * d_sdf, const uint* d_matcap, int matW, int matH) {
+    float4 normal_surface;
 
-    normal_eye.x = d_sdf[idx] - d_sdf[idx+1];
-    normal_eye.y = d_sdf[idx+2] - d_sdf[idx + 3];
-    normal_eye.z = d_sdf[idx + 4] - d_sdf[idx + 5];
-    normal_eye = normalize(normal_eye);
-    
-    int uvx = (normal_eye.x * 0.5 + 0.5) * 512;
-    int uvy = (normal_eye.y * 0.5 + 0.5) * 512;
-    
-    int index = uvx * 512 + uvy;
+    normal_surface.x = d_sdf[idx] - d_sdf[idx+1];
+    normal_surface.y = d_sdf[idx+2] - d_sdf[idx + 3];
+    normal_surface.z = d_sdf[idx + 4] - d_sdf[idx + 5];
+    normal_surface.w = 0.0;
+    normal_surface = normalize(normal_surface);
 
+    float4 normal_eye = normalize(mul(c_invViewMatrix, normal_surface));
+    
+    // TODO: matcap should be in texture memory... 
+    int uvx = (normal_eye.x * 0.5 + 0.5) * matW;
+    int uvy = (normal_eye.y * 0.5 + 0.5) * matH;
+    
+    int index = uvy * matW + uvx;
+
+    if (index < 0) {
+        //printf("SDF VALS: %f %f %f %f %f %f\n", d_sdf[idx], d_sdf[idx+1], d_sdf[idx+2], d_sdf[idx+3], d_sdf[idx+4], d_sdf[idx+5]);
+        return rgbaFloatToInt(make_float4(0.0f));
+    }
     return d_matcap[index];
 }
-
 
 __global__ void
 singleMarch(
@@ -199,6 +206,8 @@ singleMarch(
     const float* d_ray,
     float* d_tfar,
     const uint* d_matcap,
+    int matcapW,
+    int matcapH,
     int imageW,
     int imageH
 )
@@ -216,7 +225,7 @@ singleMarch(
 
     if (d_mask[id] >= COLOR_MASK_VAL) {
         // needs to be colored.
-        d_output[id] = fragColor(inferenceIndex, d_sdf, d_matcap);
+        d_output[id] = fragColor(id, inferenceIndex, d_sdf, d_matcap, matcapW, matcapH);
         d_mask[id] = 0;
         return;
     }
@@ -224,7 +233,7 @@ singleMarch(
     const float3 ray = getFloat3(d_ray, 3*id);
     float3 point = getFloat3(d_points, 3*id);
 
-    const float tstep = -tanh(d_sdf[inferenceIndex]);
+    const float tstep = tanh(d_sdf[inferenceIndex]);
     d_tfar[id] -= tstep;
 
     if (d_tfar[id] <= 0) {
@@ -271,7 +280,14 @@ void printCrap(Image& idSDFMap, Image& stepMask, Matrix& points, Matrix& batch) 
 }
 
 __global__
-void createBatch (float* d_batch, const uint* d_idSDFMap, const uint* d_mask, const float* d_points, const int imageW, const int imageH) {
+void createBatch (
+    float* d_batch, 
+    const uint* d_idSDFMap, 
+    const uint* d_mask, 
+    const float* d_points, 
+    const int imageW, 
+    const int imageH) 
+{
     const int modifier[] = {
          1, 0, 0,
         -1, 0, 0,
@@ -337,9 +353,6 @@ int formatInferenceReqs(Image& idSDFMap, Image& stepMask, Matrix& points, Matrix
         imageH
     );
 
-    //printCrap(idSDFMap,stepMask, points, batch);
-
-    
     return batchSize;
 }
 
@@ -357,11 +370,11 @@ void allocateBuffers(const int imageW, const int imageH) {
     int imageSize = imageW*imageH;
 
     points = Matrix(Shape(3, imageSize));
-    batch = Matrix(Shape(3*6, imageSize));
+    batch = Matrix(Shape(3*COLOR_MASK_VAL, imageSize)); 
     ray = Matrix(Shape(3, imageSize));
     far = Matrix(Shape(1, imageSize));
-    stepMask = Image(Shape(imageH, imageW));
-    idSDFMap = Image(Shape(imageH, imageW));
+    stepMask = Image(Shape(imageW, imageH));
+    idSDFMap = Image(Shape(imageW, imageH));
 
     // allocate them
     points.allocateMemory();
@@ -370,6 +383,9 @@ void allocateBuffers(const int imageW, const int imageH) {
     stepMask.allocateMemory();
     idSDFMap.allocateMemory();
     batch.allocateMemory();
+
+    // we need to reinit the sdf buffer
+
 }
 
 extern "C"
@@ -380,7 +396,7 @@ void render_kernel(
     uint imageW, 
     uint imageH,
     NeuralNetwork& nn,
-    uint *matcap
+    Image matcap
 ) {
     int imageSize = imageH*imageW;
 
@@ -423,8 +439,7 @@ void render_kernel(
         }
 
         // infer all points required
-        sdf = nn.forward(batch, imageSize*6);  //the x6 is too ensure memory exists if entire image needs to be colored.
-
+        sdf = nn.forward(batch, imageSize*COLOR_MASK_VAL);  //the x6 is too ensure memory exists if entire image needs to be colored.
         // take step, updating mask, points, and ray position (tfar)
         singleMarch<<<gridSize, blockSize>>>(
             d_output,
@@ -434,7 +449,9 @@ void render_kernel(
             points.deviceData.get(), 
             (const float *)ray.deviceData.get(),
             far.deviceData.get(),
-            (const uint *)matcap,
+            (const uint *)matcap.deviceData.get(),
+            matcap.shape.x,
+            matcap.shape.y,
             imageW, 
             imageH
         );
