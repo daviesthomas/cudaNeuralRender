@@ -43,16 +43,16 @@ bool Image::loadPNG(std::string filename) {
 
     if (error) {
         std::cout << "Error reading png: " << lodepng_error_text(error) << std::endl;
-        return 0;
+        return false;
     }
 
     maybeAllocateMemory(Shape((int)w,(int)h));
 
-    float r, g, b, a;
+    uint r, g, b, a;
 
     // copy into host memory.
     for (int i = 0 ; i < (png.size()/4); i ++) {
-        r = png[i*4];   // clamp to [0.0, 1.0]
+        r = png[i*4]; 
         g = png[i*4+1];
         b = png[i*4+2];
         a = png[i*4+3];
@@ -62,7 +62,7 @@ bool Image::loadPNG(std::string filename) {
     // copy into device memory (should be constant...)
     copyHostToDevice();
 
-    return 1;
+    return true;
 }
 
 void Image::allocateMemory() {
