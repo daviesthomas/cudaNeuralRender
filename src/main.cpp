@@ -46,14 +46,18 @@ std::string neuralGeometryPath;
 std::string renderSavePath;
 bool singleImage;
 std::string matcapPath;
-uint width = 1024, height = 1024;
+uint width, height;
+
+// global toggle for saving frame
+bool doSaveNextFrame = false;
+
 //////////////////////////////////////////////
 
 dim3 blockSize(8, 8);
 dim3 gridSize;
 
-float3 viewRotation;
-float3 viewTranslation = make_float3(0.0, 0.0, -8.0f);
+float3 viewRotation = make_float3(0.0, 180.0,0.0);
+float3 viewTranslation = make_float3(.0, 0.0, -2.0f);
 float invViewMatrix[12];
 
 GLuint pbo = 0;     // OpenGL pixel buffer object
@@ -145,6 +149,16 @@ void render()
     getLastCudaError("kernel failed");
 
     checkCudaErrors(cudaGraphicsUnmapResources(1, &cuda_pbo_resource, 0));
+
+    if (doSaveNextFrame) {
+        unsigned char *h_output = (unsigned char *)malloc(width*height*4);
+        checkCudaErrors(cudaMemcpy(h_output, d_output, width*height*4, cudaMemcpyDeviceToHost));
+
+        sdkSavePPM4ub(renderSavePath.c_str(), h_output, width, height);
+        free(h_output);
+        std::cout << "saved frame...\n";
+        doSaveNextFrame = false;
+    }
 }
 
 // display results using OpenGL (called by GLUT)
@@ -224,10 +238,15 @@ void idle()
 
 void keyboard(unsigned char key, int x, int y)
 {
+    const int SPACE = 32;
     switch (key)
     {   
+        case SPACE:
+            //save image here! 
+            doSaveNextFrame = true;
+            break;
         default:
-            printf("you pressed a key!\n");
+            printf("you pressed a key! %d\n", key);
 
     }
 
@@ -327,13 +346,15 @@ void generateSingleImage()
     checkCudaErrors(cudaMalloc((void **)&d_output, width*height*sizeof(uint)));
     checkCudaErrors(cudaMemset(d_output, 0, width*height*sizeof(uint)));
 
-    float modelView[16] =
-    {
-        1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f,
-        0.0f, 0.0f, 4.0f, 1.0f
-    };
+    GLfloat modelView[16];
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glLoadIdentity();
+    glRotatef(-viewRotation.x, 1.0, 0.0, 0.0);
+    glRotatef(-viewRotation.y, 0.0, 1.0, 0.0);
+    glTranslatef(-viewTranslation.x, -viewTranslation.y, -viewTranslation.z);
+    glGetFloatv(GL_MODELVIEW_MATRIX, modelView);
+    glPopMatrix();
 
     invViewMatrix[0] = modelView[0];
     invViewMatrix[1] = modelView[4];
@@ -380,7 +401,7 @@ void generateSingleImage()
     unsigned char *h_output = (unsigned char *)malloc(width*height*4);
     checkCudaErrors(cudaMemcpy(h_output, d_output, width*height*4, cudaMemcpyDeviceToHost));
 
-    sdkSavePPM4ub("volume.ppm", h_output, width, height);
+    sdkSavePPM4ub(renderSavePath.c_str(), h_output, width, height);
 
     cudaFree(d_output);
 
@@ -486,6 +507,9 @@ void usage() {
     std::cout << "\t-H imageH (int)\n";
     std::cout << "\t-W imageW (int)\n";
     std::cout << "\t-M matcap file path (string) ( default: matcaps/blue.png )\n";
+    std::cout << "\t-rx rotation in degree about x axis \n";
+    std::cout << "\t-ry rotation in degree about y axis \n";
+    std::cout << "\t-rz rotation in degree about z axis \n";
     std::cout << "\t--single if present, only a single frame is rendered and saved. (default: false)\n";
 }
 
@@ -499,7 +523,7 @@ void parseCmdOptions(int argc, char** argv)
     if (cmdOptionExists(argv, argv+argc, "-o")){
         renderSavePath = atoi(getCmdOption(argv, argv+argc, "-o"));
     } else{
-        renderSavePath = "volume.ppm";
+        renderSavePath = neuralGeometryPath + std::string(".ppm");
     }
     if (cmdOptionExists(argv, argv+argc, "-H")){
         height = atoi(getCmdOption(argv, argv+argc, "-H"));
@@ -516,6 +540,21 @@ void parseCmdOptions(int argc, char** argv)
     } else {
         matcapPath = "matcaps/blue.png";
     }
+    float rx, ry, z;
+    if (cmdOptionExists(argv, argv+argc, "-rx")){
+        rx = atof(getCmdOption(argv, argv+argc, "-rx"));
+    } else {
+        rx = 0.0;
+    }
+    if (cmdOptionExists(argv, argv+argc, "-ry")){
+        ry = atof(getCmdOption(argv, argv+argc, "-ry"));
+    } else {
+        ry = 0.0;
+    }
+
+    viewRotation.x = rx;
+    viewRotation.y = ry;
+    
     if (cmdOptionExists(argv, argv+argc, "--single")) {
         singleImage = true;
     }
