@@ -22,7 +22,13 @@ typedef struct
     float4 m[3];
 } float3x4;
 
+typedef struct
+{
+    float4 m[4];
+} float4x4;
+
 __constant__ float3x4 c_invViewMatrix;  // inverse view matrix
+__constant__ float4x4 c_normalMatrix;
 
 struct Ray
 {
@@ -36,9 +42,10 @@ struct Sphere
     float r;    //radius
 };
 
+const uint BACKGROUND_COLOR = 40000;
 const int COLOR_MASK_VAL = 6;
-const float EPSILON = 0.00001;
-const int MAX_STEPS = 200;
+const float EPSILON = 0.001;
+const int MAX_STEPS = 70;
 
 // intersect ray with a sphere
 __device__
@@ -81,12 +88,24 @@ float4 mul(const float3x4 &M, const float4 &v)
     return r;
 }
 
+__device__
+float4 mul(const float4x4 &M, const float4 &v)
+{
+    float4 r;
+    r.x = dot(v, M.m[0]);
+    r.y = dot(v, M.m[1]);
+    r.z = dot(v, M.m[2]);
+    r.w = dot(v, M.m[3]);
+    return r;
+}
+
 __device__ uint rgbaFloatToInt(float4 rgba)
 {
     rgba.x = __saturatef(rgba.x);   // clamp to [0.0, 1.0]
     rgba.y = __saturatef(rgba.y);
     rgba.z = __saturatef(rgba.z);
     rgba.w = __saturatef(rgba.w);
+    
     return (uint(rgba.w*255)<<24) | (uint(rgba.z*255)<<16) | (uint(rgba.y*255)<<8) | uint(rgba.x*255);
 }
 
@@ -150,7 +169,7 @@ initMarcher(
     // no need to march if ray never hits bounding primitive
     if ( !hit ) {
         d_mask[id] = 0;
-        d_output[id] = rgbaFloatToInt(make_float4(0.0f));
+        d_output[id] = BACKGROUND_COLOR;
         return;
     }
 
@@ -172,16 +191,27 @@ initMarcher(
     d_mask[id] = 1;
 }
 
-__device__ uint fragColor(int id,int idx, const float * d_sdf, const uint* d_matcap, int matW, int matH) {
-    float4 normal_surface;
+__device__ 
+float3 surfaceNormal(int idx, const float* d_sdf) {
+    float3 normal;
+    normal.x = d_sdf[idx] - d_sdf[idx+1];
+    normal.y = d_sdf[idx+2] - d_sdf[idx + 3];
+    normal.z = d_sdf[idx + 4] - d_sdf[idx + 5];
+    normal = normalize(normal);
+    return normal;
+}
 
-    normal_surface.x = d_sdf[idx] - d_sdf[idx+1];
-    normal_surface.y = d_sdf[idx+2] - d_sdf[idx + 3];
-    normal_surface.z = d_sdf[idx + 4] - d_sdf[idx + 5];
-    normal_surface.w = 0.0;
-    normal_surface = normalize(normal_surface);
+__device__
+uint facingColor(float3 n, float3 rayDir) {
+    float ratio = max(0.0, dot(n,-rayDir) );
 
-    float4 normal_eye = normalize(mul(c_invViewMatrix, normal_surface));
+    return rgbaFloatToInt(make_float4(ratio));
+}
+
+
+__device__ uint matCapColor(float3 normal, const uint* d_matcap, int matW, int matH) {
+    float4 normal_eye4 = mul(c_normalMatrix, make_float4(normal.x, normal.y,normal.z, 0.0));
+    float3 normal_eye = normalize(make_float3(normal_eye4.x, normal_eye4.y, normal_eye4.z));
     
     // TODO: matcap should be in texture memory... 
     int uvx = (normal_eye.x * 0.5 + 0.5) * matW;
@@ -190,11 +220,11 @@ __device__ uint fragColor(int id,int idx, const float * d_sdf, const uint* d_mat
     int index = uvy * matW + uvx;
 
     if (index < 0) {
-        //printf("SDF VALS: %f %f %f %f %f %f\n", d_sdf[idx], d_sdf[idx+1], d_sdf[idx+2], d_sdf[idx+3], d_sdf[idx+4], d_sdf[idx+5]);
         return rgbaFloatToInt(make_float4(0.0f));
     }
     return d_matcap[index];
 }
+
 
 __global__ void
 singleMarch(
@@ -222,15 +252,17 @@ singleMarch(
     if (d_mask[id] == 0) return;    // masked out
 
     int inferenceIndex = d_idSDFMap[id];
+    const float3 ray = getFloat3(d_ray, 3*id);
 
     if (d_mask[id] >= COLOR_MASK_VAL) {
         // needs to be colored.
-        d_output[id] = fragColor(id, inferenceIndex, d_sdf, d_matcap, matcapW, matcapH);
+        float3 n = surfaceNormal(inferenceIndex, d_sdf);
+        //d_output[id] = facingColor(n, ray);
+        d_output[id] = matCapColor(n, d_matcap, matcapW, matcapH);
         d_mask[id] = 0;
         return;
     }
 
-    const float3 ray = getFloat3(d_ray, 3*id);
     float3 point = getFloat3(d_points, 3*id);
 
     const float tstep = tanh(d_sdf[inferenceIndex]);
@@ -238,7 +270,7 @@ singleMarch(
 
     if (d_tfar[id] <= 0) {
         d_mask[id] = 0;
-        d_output[id] = rgbaFloatToInt(make_float4(0.0f));
+        d_output[id] = BACKGROUND_COLOR;
         return;
     }
 
@@ -467,14 +499,17 @@ void render_kernel(
             gridSize,
             blockSize
         );
-        
     }
+    //TODO: set any ray that didnt converge to background color
+    
+
 }
 
 extern "C"
-void copyInvViewMatrix(float *invViewMatrix, size_t sizeofMatrix)
+void copyViewMatrices(float *invViewMatrix, size_t sizeofViewMatrix, float *normalMatrix, size_t sizeofNormalMatrix)
 {
-    checkCudaErrors(cudaMemcpyToSymbol(c_invViewMatrix, invViewMatrix, sizeofMatrix));
+    checkCudaErrors(cudaMemcpyToSymbol(c_invViewMatrix, invViewMatrix, sizeofViewMatrix));
+    checkCudaErrors(cudaMemcpyToSymbol(c_normalMatrix, normalMatrix, sizeofNormalMatrix));
 }
 
 #endif // #ifndef _VOLUMERENDER_KERNEL_CU_
