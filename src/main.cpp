@@ -1,3 +1,6 @@
+
+#include <Eigen/Eigen>
+
 // OpenGL Graphics includes
 #include <helper_gl.h>
 #if defined (__APPLE__) || defined(MACOSX)
@@ -58,7 +61,11 @@ dim3 gridSize;
 
 float3 viewRotation = make_float3(0.0, 180.0,0.0);
 float3 viewTranslation = make_float3(.0, 0.0, -2.0f);
-float invViewMatrix[12];
+
+Eigen::Matrix4f normalMatrix;
+
+// TODO: convert to eigen!
+Eigen::MatrixXf transposedModelView(3,4);
 
 GLuint pbo = 0;     // OpenGL pixel buffer object
 GLuint tex = 0;     // OpenGL texture object
@@ -93,10 +100,7 @@ extern "C" void render_kernel(
     Image matcap
 );
 
-extern "C" void copyInvViewMatrix(float *invViewMatrix, size_t sizeofMatrix);
-
-void initPixelBuffer();
-
+extern "C" void copyViewMatrices(float *invViewMatrix, size_t sizeofInvModelViewMat, float *normalMatrix, size_t sizeofNormalMatrix);
 
 void computeFPS()
 {
@@ -117,11 +121,43 @@ void computeFPS()
     }
 }
 
+void initPixelBuffer()
+{
+    if (pbo)
+    {
+        // unregister this buffer object from CUDA C
+        checkCudaErrors(cudaGraphicsUnregisterResource(cuda_pbo_resource));
+
+        // delete old buffer
+        glDeleteBuffers(1, &pbo);
+        glDeleteTextures(1, &tex);
+    }
+
+    // create pixel buffer object for display
+    glGenBuffers(1, &pbo);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER_ARB, pbo);
+    glBufferData(GL_PIXEL_UNPACK_BUFFER_ARB, width*height*sizeof(GLubyte)*4, 0, GL_STREAM_DRAW_ARB);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER_ARB, 0);
+
+    // register this buffer object with CUDA
+    checkCudaErrors(cudaGraphicsGLRegisterBuffer(&cuda_pbo_resource, pbo, cudaGraphicsMapFlagsWriteDiscard));
+
+    // create texture for display
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
 
 // render image using CUDA
 void render()
 {
-    copyInvViewMatrix(invViewMatrix, sizeof(float4)*3);
+    // copy invViewMatrix to constant memory.
+    copyViewMatrices(transposedModelView.data(), sizeof(float4)*3, normalMatrix.data(), sizeof(float4)*4);
+
 
     // map PBO to get CUDA device pointer
     uint *d_output;
@@ -158,37 +194,37 @@ void render()
         free(h_output);
         std::cout << "saved frame...\n";
         doSaveNextFrame = false;
+
+        if (singleImage) {
+            exit(0);
+        }
     }
 }
+
+void updateViewMatrices() {
+    Eigen::Affine3f modelView = Eigen::Affine3f::Identity();
+
+    Eigen::Matrix3f m;
+    m = Eigen::AngleAxisf(-viewRotation.x*M_PI/180, Eigen::Vector3f::UnitX())
+        * Eigen::AngleAxisf(-viewRotation.y*M_PI/180,  Eigen::Vector3f::UnitY());
+
+    modelView.rotate(m);
+    modelView.translate(Eigen::Vector3f(-viewTranslation.x, -viewTranslation.y, -viewTranslation.z));
+
+    normalMatrix = modelView.matrix().transpose().inverse();
+    
+    transposedModelView.row(0) = modelView.matrix().col(0);
+    transposedModelView.row(1) = modelView.matrix().col(1);
+    transposedModelView.row(2) = modelView.matrix().col(2);
+}
+
 
 // display results using OpenGL (called by GLUT)
 void display()
 {
     sdkStartTimer(&timer);
 
-    // use OpenGL to build view matrix
-    GLfloat modelView[16];
-    glMatrixMode(GL_MODELVIEW);
-    glPushMatrix();
-    glLoadIdentity();
-    glRotatef(-viewRotation.x, 1.0, 0.0, 0.0);
-    glRotatef(-viewRotation.y, 0.0, 1.0, 0.0);
-    glTranslatef(-viewTranslation.x, -viewTranslation.y, -viewTranslation.z);
-    glGetFloatv(GL_MODELVIEW_MATRIX, modelView);
-    glPopMatrix();
-
-    invViewMatrix[0] = modelView[0];
-    invViewMatrix[1] = modelView[4];
-    invViewMatrix[2] = modelView[8];
-    invViewMatrix[3] = modelView[12];
-    invViewMatrix[4] = modelView[1];
-    invViewMatrix[5] = modelView[5];
-    invViewMatrix[6] = modelView[9];
-    invViewMatrix[7] = modelView[13];
-    invViewMatrix[8] = modelView[2];
-    invViewMatrix[9] = modelView[6];
-    invViewMatrix[10] = modelView[10];
-    invViewMatrix[11] = modelView[14];
+    updateViewMatrices();
 
     render();
 
@@ -247,7 +283,6 @@ void keyboard(unsigned char key, int x, int y)
             break;
         default:
             printf("you pressed a key! %d\n", key);
-
     }
 
     glutPostRedisplay();
@@ -341,36 +376,15 @@ void cleanup()
 }
 
 void generateSingleImage()
-{
+{   
     uint *d_output;
     checkCudaErrors(cudaMalloc((void **)&d_output, width*height*sizeof(uint)));
     checkCudaErrors(cudaMemset(d_output, 0, width*height*sizeof(uint)));
 
-    GLfloat modelView[16];
-    glMatrixMode(GL_MODELVIEW);
-    glPushMatrix();
-    glLoadIdentity();
-    glRotatef(-viewRotation.x, 1.0, 0.0, 0.0);
-    glRotatef(-viewRotation.y, 0.0, 1.0, 0.0);
-    glTranslatef(-viewTranslation.x, -viewTranslation.y, -viewTranslation.z);
-    glGetFloatv(GL_MODELVIEW_MATRIX, modelView);
-    glPopMatrix();
-
-    invViewMatrix[0] = modelView[0];
-    invViewMatrix[1] = modelView[4];
-    invViewMatrix[2] = modelView[8];
-    invViewMatrix[3] = modelView[12];
-    invViewMatrix[4] = modelView[1];
-    invViewMatrix[5] = modelView[5];
-    invViewMatrix[6] = modelView[9];
-    invViewMatrix[7] = modelView[13];
-    invViewMatrix[8] = modelView[2];
-    invViewMatrix[9] = modelView[6];
-    invViewMatrix[10] = modelView[10];
-    invViewMatrix[11] = modelView[14];
+    updateViewMatrices();
 
     // call CUDA kernel, writing results to PBO
-    copyInvViewMatrix(invViewMatrix, sizeof(float4)*3);
+    copyViewMatrices(transposedModelView.data(), sizeof(float4)*3, normalMatrix.data(), sizeof(float4)*4);
 
     // Start timer 0 and process n loops on the GPU
     int nIter = 1;
@@ -426,41 +440,11 @@ void initGL(int *argc, char **argv)
     }
 }
 
-void initPixelBuffer()
-{
-    if (pbo)
-    {
-        // unregister this buffer object from CUDA C
-        checkCudaErrors(cudaGraphicsUnregisterResource(cuda_pbo_resource));
-
-        // delete old buffer
-        glDeleteBuffers(1, &pbo);
-        glDeleteTextures(1, &tex);
-    }
-
-    // create pixel buffer object for display
-    glGenBuffers(1, &pbo);
-    glBindBuffer(GL_PIXEL_UNPACK_BUFFER_ARB, pbo);
-    glBufferData(GL_PIXEL_UNPACK_BUFFER_ARB, width*height*sizeof(GLubyte)*4, 0, GL_STREAM_DRAW_ARB);
-    glBindBuffer(GL_PIXEL_UNPACK_BUFFER_ARB, 0);
-
-    // register this buffer object with CUDA
-    checkCudaErrors(cudaGraphicsGLRegisterBuffer(&cuda_pbo_resource, pbo, cudaGraphicsMapFlagsWriteDiscard));
-
-    // create texture for display
-    glGenTextures(1, &tex);
-    glBindTexture(GL_TEXTURE_2D, tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glBindTexture(GL_TEXTURE_2D, 0);
-}
 
 void startRendering(int argc, char** argv) {
     initGL(&argc, argv);
 
     findCudaDevice(argc, (const char **)argv);
-
 
     // This is the normal rendering path for VolumeRender
     glutDisplayFunc(display);
@@ -511,10 +495,15 @@ void usage() {
     std::cout << "\t-ry rotation in degree about y axis \n";
     std::cout << "\t-rz rotation in degree about z axis \n";
     std::cout << "\t--single if present, only a single frame is rendered and saved. (default: false)\n";
+    std::cout << "\t-h (--help)\n";
 }
 
 void parseCmdOptions(int argc, char** argv)
 {
+    if (cmdOptionExists(argv, argv + argc, "-h")) {
+        usage();
+        exit(0);
+    }
     if (cmdOptionExists(argv, argv+argc, "-i")){
         neuralGeometryPath = getCmdOption(argv, argv+argc, "-i");
     } else {

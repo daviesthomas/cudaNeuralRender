@@ -6,6 +6,7 @@ find_package(CUDA QUIET REQUIRED)
 find_package(GLUT REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(HighFive 2.1 REQUIRED)
+find_package (Eigen3 3.3 REQUIRED NO_MODULE)
 
 if (CUDA_VERSION VERSION_LESS 9.2)
   message(FATAL_ERROR "CUDA 9.2+ Required, Found ${CUDA_VERSION}.")
@@ -38,6 +39,7 @@ include_directories(
   ${CUDA_CUBLAS_DIRS}
   ${GLUT_INCLUDE_DIRS}
   ${OPENGL_INCLUDE_DIRS}
+  ${EIGEN3_INCLUDE_DIRS}
   ../submodules/cutlass/include
   ../submodules/HighFive/include
 )
@@ -72,4 +74,10 @@ cuda_add_executable(
     simpleInfer.cpp
 )
 
-target_link_libraries(simpleInfer ${GLUT_LIBRARIES} ${OPENGL_LIBRARIES} ${CUDA_LIBRARIES} HighFive -lcudadevrt)
+target_link_libraries(
+  simpleInfer 
+  ${GLUT_LIBRARIES} 
+  ${OPENGL_LIBRARIES} 
+  ${CUDA_LIBRARIES} 
+  HighFive 
+  -lcudadevrt)
