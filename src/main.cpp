@@ -60,12 +60,10 @@ dim3 blockSize(8, 8);
 dim3 gridSize;
 
 float3 viewRotation = make_float3(0.0, 180.0,0.0);
-float3 viewTranslation = make_float3(.0, 0.0, -2.0f);
+float3 viewTranslation = make_float3(.0, 0.0, -6.0f);
 
 Eigen::Matrix4f normalMatrix;
-
-// TODO: convert to eigen!
-Eigen::MatrixXf transposedModelView(3,4);
+Eigen::Matrix<float, 3,4,Eigen::RowMajor> transposedModelView;
 
 GLuint pbo = 0;     // OpenGL pixel buffer object
 GLuint tex = 0;     // OpenGL texture object
@@ -155,7 +153,7 @@ void initPixelBuffer()
 // render image using CUDA
 void render()
 {
-    // copy invViewMatrix to constant memory.
+    // copy view matrices to constant memory
     copyViewMatrices(transposedModelView.data(), sizeof(float4)*3, normalMatrix.data(), sizeof(float4)*4);
 
 
@@ -211,11 +209,11 @@ void updateViewMatrices() {
     modelView.rotate(m);
     modelView.translate(Eigen::Vector3f(-viewTranslation.x, -viewTranslation.y, -viewTranslation.z));
 
-    normalMatrix = modelView.matrix().transpose().inverse();
+    transposedModelView.row(0) = modelView.matrix().row(0);
+    transposedModelView.row(1) = modelView.matrix().row(1);
+    transposedModelView.row(2) = modelView.matrix().row(2);
     
-    transposedModelView.row(0) = modelView.matrix().col(0);
-    transposedModelView.row(1) = modelView.matrix().col(1);
-    transposedModelView.row(2) = modelView.matrix().col(2);
+    normalMatrix = modelView.matrix().transpose().inverse();
 }
 
 
