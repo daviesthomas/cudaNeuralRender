@@ -17,6 +17,7 @@
 typedef unsigned int  uint;
 typedef unsigned char uchar;
 
+
 typedef struct
 {
     float4 m[3];
@@ -29,6 +30,7 @@ typedef struct
 
 __constant__ float3x4 c_invViewMatrix;  // inverse view matrix
 __constant__ float4x4 c_normalMatrix;
+__constant__ int c_coloringType = 0;  //default to ratio coloring.
 
 struct Ray
 {
@@ -42,10 +44,11 @@ struct Sphere
     float r;    //radius
 };
 
-const uint BACKGROUND_COLOR = 40000;
+const uint BACKGROUND_COLOR = 0;
 const int COLOR_MASK_VAL = 6;
 const float EPSILON = 0.001;
 const int MAX_STEPS = 70;
+
 
 // intersect ray with a sphere
 __device__
@@ -177,7 +180,7 @@ initMarcher(
 
     // start ray at edge of bounds
     float3 point = eyeRay.o + eyeRay.d*tnear;
-
+ 
     //store starting position
     setFloat3(d_points, 3*id, point);
     
@@ -257,8 +260,12 @@ singleMarch(
     if (d_mask[id] >= COLOR_MASK_VAL) {
         // needs to be colored.
         float3 n = surfaceNormal(inferenceIndex, d_sdf);
-        //d_output[id] = facingColor(n, ray);
-        d_output[id] = matCapColor(n, d_matcap, matcapW, matcapH);
+        if (c_coloringType == 0) {
+            d_output[id] = facingColor(n, ray);
+        } else {
+            d_output[id] = matCapColor(n, d_matcap, matcapW, matcapH);
+        }
+        
         d_mask[id] = 0;
         return;
     }
@@ -506,10 +513,11 @@ void render_kernel(
 }
 
 extern "C"
-void copyViewMatrices(float *invViewMatrix, size_t sizeofViewMatrix, float *normalMatrix, size_t sizeofNormalMatrix)
+void copyViewMatrices(float *invViewMatrix, size_t sizeofViewMatrix, float *normalMatrix, size_t sizeofNormalMatrix, int colorType)
 {
     checkCudaErrors(cudaMemcpyToSymbol(c_invViewMatrix, invViewMatrix, sizeofViewMatrix));
     checkCudaErrors(cudaMemcpyToSymbol(c_normalMatrix, normalMatrix, sizeofNormalMatrix));
+    checkCudaErrors(cudaMemcpyToSymbol(c_coloringType, &colorType, sizeof(int)));
 }
 
 #endif // #ifndef _VOLUMERENDER_KERNEL_CU_

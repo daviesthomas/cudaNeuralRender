@@ -52,6 +52,8 @@ bool doSpin;
 std::string matcapPath;
 uint width, height;
 
+int colorType = 0;
+
 // global toggle for saving frame
 bool doSaveNextFrame = false;
 
@@ -100,7 +102,7 @@ extern "C" void render_kernel(
     Image matcap
 );
 
-extern "C" void copyViewMatrices(float *invViewMatrix, size_t sizeofInvModelViewMat, float *normalMatrix, size_t sizeofNormalMatrix);
+extern "C" void copyViewMatrices(float *invViewMatrix, size_t sizeofInvModelViewMat, float *normalMatrix, size_t sizeofNormalMatrix, int colorType);
 
 void computeFPS()
 {
@@ -156,7 +158,7 @@ void initPixelBuffer()
 void render()
 {
     // copy view matrices to constant memory
-    copyViewMatrices(transposedModelView.data(), sizeof(float4)*3, normalMatrix.data(), sizeof(float4)*4);
+    copyViewMatrices(transposedModelView.data(), sizeof(float4)*3, normalMatrix.data(), sizeof(float4)*4, colorType);
 
 
     // map PBO to get CUDA device pointer
@@ -392,7 +394,7 @@ void generateSingleImage()
     updateViewMatrices();
 
     
-    copyViewMatrices(transposedModelView.data(), sizeof(float4)*3, normalMatrix.data(), sizeof(float4)*4);
+    copyViewMatrices(transposedModelView.data(), sizeof(float4)*3, normalMatrix.data(), sizeof(float4)*4, colorType);
 
     cudaDeviceSynchronize();
     sdkStartTimer(&timer);
@@ -519,8 +521,8 @@ void usage() {
     std::cout << "   or: neuralSDFRenderer [OPTION]... -i SOURCE.h5 -o DEST.ppm\n";
     std::cout << "         render single image of neuralGeometry file and save to destination.ppm file\n";
     std::cout << "Options\n";
-    std::cout << "\t-i input neuralGeometry path (string) default: neuralGeometries/armadillo.h5\n";
-    std::cout << "\t-o output image dir (string) default: {inputPath}\n";
+    std::cout << "\t-i input neuralGeometry path (string) REQUIRED\n";
+    std::cout << "\t-o output image dir (string) default: {inputPath}.png\n";
     std::cout << "\t-H imageH (int)\n";
     std::cout << "\t-W imageW (int)\n";
     std::cout << "\t-M matcap file path (string) ( default: matcaps/blue.png )\n";
@@ -541,13 +543,16 @@ void parseCmdOptions(int argc, char** argv)
     if (cmdOptionExists(argv, argv+argc, "-i")){
         neuralGeometryPath = getCmdOption(argv, argv+argc, "-i");
     } else {
-        neuralGeometryPath = "neuralGeometries/armadillo.h5";
-    }
+        std::cerr << "You must give path to neuralGeometry\n";
+        exit(0);
+    } 
+
     if (cmdOptionExists(argv, argv+argc, "-o")){
         renderSavePath = getCmdOption(argv, argv+argc, "-o");
     } else{
         renderSavePath = neuralGeometryPath;
     }
+
     if (cmdOptionExists(argv, argv+argc, "-H")){
         height = atoi(getCmdOption(argv, argv+argc, "-H"));
     } else {
@@ -558,11 +563,11 @@ void parseCmdOptions(int argc, char** argv)
     } else {
         width = 512;
     }
+
     if (cmdOptionExists(argv, argv+argc, "-M")){
         matcapPath = getCmdOption(argv, argv+argc, "-M");
-    } else {
-        matcapPath = "matcaps/blue.png";
-    }
+    } 
+
     float rx, ry, z;
     if (cmdOptionExists(argv, argv+argc, "-rx")){
         rx = atof(getCmdOption(argv, argv+argc, "-rx"));
@@ -610,10 +615,13 @@ main(int argc, char **argv)
     }   
     printf("Model initialized...\n\n");
 
-    ok = matcap.loadPNG(matcapPath);
-    if (!ok) {
-        printf("Failed to load matcap file (%s)... exiting \n", matcapPath.c_str());
-        return 0;
+    if (!matcapPath.empty()) {
+        ok = matcap.loadPNG(matcapPath);
+        if (!ok) {
+            printf("Failed to load matcap file (%s)... exiting \n", matcapPath.c_str());
+            return 0;
+        }
+        colorType = 1;
     }
 
     gridSize = dim3(iDivUp(width, blockSize.x), iDivUp(height, blockSize.y));
