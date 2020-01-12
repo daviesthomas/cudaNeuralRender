@@ -48,6 +48,7 @@ typedef unsigned int uint;
 std::string neuralGeometryPath;
 std::string renderSavePath;
 bool singleImage;
+bool doSpin;
 std::string matcapPath;
 uint width, height;
 
@@ -83,6 +84,7 @@ char **pArgv;
 
 Image matcap;
 NeuralNetwork nn;
+uint saveCount = 0;
 
 #ifndef MAX
 #define MAX(a,b) ((a > b) ? a : b)
@@ -185,17 +187,15 @@ void render()
     checkCudaErrors(cudaGraphicsUnmapResources(1, &cuda_pbo_resource, 0));
 
     if (doSaveNextFrame) {
-        unsigned char *h_output = (unsigned char *)malloc(width*height*4);
-        checkCudaErrors(cudaMemcpy(h_output, d_output, width*height*4, cudaMemcpyDeviceToHost));
+        Image outputImage = Image(width,height,true);
+        outputImage.allocateMemory();
 
-        sdkSavePPM4ub(renderSavePath.c_str(), h_output, width, height);
-        free(h_output);
-        std::cout << "saved frame...\n";
+        checkCudaErrors(cudaMemcpy(outputImage.hostData.get(), d_output, width*height*4, cudaMemcpyDeviceToHost));
+        std::string ext = "_" + std::to_string(saveCount) + ".png";
+        bool ok = outputImage.savePNG(renderSavePath + ext);
+    
+        saveCount ++;
         doSaveNextFrame = false;
-
-        if (singleImage) {
-            exit(0);
-        }
     }
 }
 
@@ -373,6 +373,16 @@ void cleanup()
     checkCudaErrors(cudaProfilerStop());
 }
 
+// simple helper for determining 0 padding required.
+int countDigit(int n) {
+    int count = 0;
+    while(n != 0) {
+        n = n/10;
+        ++count;
+    }
+    return count;
+}
+
 void generateSingleImage()
 {   
     uint *d_output;
@@ -381,15 +391,13 @@ void generateSingleImage()
 
     updateViewMatrices();
 
-    // call CUDA kernel, writing results to PBO
+    
     copyViewMatrices(transposedModelView.data(), sizeof(float4)*3, normalMatrix.data(), sizeof(float4)*4);
-
-    // Start timer 0 and process n loops on the GPU
-    int nIter = 1;
 
     cudaDeviceSynchronize();
     sdkStartTimer(&timer);
 
+    // call CUDA kernel, writing results to PBO
     render_kernel(
         gridSize, 
         blockSize, 
@@ -405,21 +413,48 @@ void generateSingleImage()
     sdkStopTimer(&timer);
 
     // Get elapsed time and throughput, then log to sample and master logs
-    double dAvgTime = sdkGetTimerValue(&timer)/(nIter * 1000.0);
-    printf("volumeRender, Throughput = %.4f MTexels/s, Time = %.5f s, Size = %u Texels, NumDevsUsed = %u, Workgroup = %u\n",
-           (1.0e-6 * width * height)/dAvgTime, dAvgTime, (width * height), 1, blockSize.x * blockSize.y);
+    if (saveCount == 0) {
+        double dAvgTime = sdkGetTimerValue(&timer)/(1000.0);
+        printf("volumeRender, Throughput = %.4f MTexels/s, Time = %.5f s, Size = %u Texels, NumDevsUsed = %u, Workgroup = %u\n",
+            (1.0e-6 * width * height)/dAvgTime, dAvgTime, (width * height), 1, blockSize.x * blockSize.y);
+    }
 
+    Image outputImage = Image(width,height,true);
+    outputImage.allocateMemory();
 
-    unsigned char *h_output = (unsigned char *)malloc(width*height*4);
-    checkCudaErrors(cudaMemcpy(h_output, d_output, width*height*4, cudaMemcpyDeviceToHost));
+    checkCudaErrors(cudaMemcpy(outputImage.hostData.get(), d_output, width*height*4, cudaMemcpyDeviceToHost));
 
-    sdkSavePPM4ub(renderSavePath.c_str(), h_output, width, height);
+    std::string ext;
+    //NOTE: this currently assumes max of 999 frames saved.
+    if (!singleImage) {
+        if (countDigit(saveCount) < 2) {
+            ext += "00";
+        }
+        else if (countDigit(saveCount) == 2) {
+            ext += "0";
+        }
+        ext += std::to_string(saveCount) + ".png";
+    } else {
+        ext = "render.png";
+    }
 
+    std::cout << "saving frame: " << renderSavePath + ext << std::endl;
+    bool ok = outputImage.savePNG(renderSavePath + ext);
+    
+    saveCount ++;
+    
     cudaFree(d_output);
 
-    free(h_output);
-
     cleanup();
+}
+
+void doABarrelRoll(){
+    
+    
+    for (int i = 0; i < 360; i ++) {
+        viewRotation.y = float(i);
+        generateSingleImage();
+    }
 }
 
 void initGL(int *argc, char **argv)
@@ -485,7 +520,7 @@ void usage() {
     std::cout << "         render single image of neuralGeometry file and save to destination.ppm file\n";
     std::cout << "Options\n";
     std::cout << "\t-i input neuralGeometry path (string) default: neuralGeometries/armadillo.h5\n";
-    std::cout << "\t-o output image path (string) default: volume.ppm\n";
+    std::cout << "\t-o output image dir (string) default: {inputPath}\n";
     std::cout << "\t-H imageH (int)\n";
     std::cout << "\t-W imageW (int)\n";
     std::cout << "\t-M matcap file path (string) ( default: matcaps/blue.png )\n";
@@ -493,6 +528,7 @@ void usage() {
     std::cout << "\t-ry rotation in degree about y axis \n";
     std::cout << "\t-rz rotation in degree about z axis \n";
     std::cout << "\t--single if present, only a single frame is rendered and saved. (default: false)\n";
+    std::cout << "\t--spin if present 360 images created for production of a gif of shape rotating :) \n";
     std::cout << "\t-h (--help)\n";
 }
 
@@ -508,9 +544,9 @@ void parseCmdOptions(int argc, char** argv)
         neuralGeometryPath = "neuralGeometries/armadillo.h5";
     }
     if (cmdOptionExists(argv, argv+argc, "-o")){
-        renderSavePath = atoi(getCmdOption(argv, argv+argc, "-o"));
+        renderSavePath = getCmdOption(argv, argv+argc, "-o");
     } else{
-        renderSavePath = neuralGeometryPath + std::string(".ppm");
+        renderSavePath = neuralGeometryPath;
     }
     if (cmdOptionExists(argv, argv+argc, "-H")){
         height = atoi(getCmdOption(argv, argv+argc, "-H"));
@@ -537,6 +573,11 @@ void parseCmdOptions(int argc, char** argv)
         ry = atof(getCmdOption(argv, argv+argc, "-ry"));
     } else {
         ry = 0.0;
+    }
+    if (cmdOptionExists(argv, argv+argc, "--spin")){
+        doSpin = true;
+    }else {
+        doSpin = false;
     }
 
     viewRotation.x = rx;
@@ -580,6 +621,10 @@ main(int argc, char **argv)
     sdkCreateTimer(&timer);
     if (singleImage) {
         generateSingleImage();
+        exit(0);
+    }
+    else if (doSpin) {
+        doABarrelRoll();
     }
     else {
         startRendering(argc,argv);

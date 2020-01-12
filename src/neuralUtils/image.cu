@@ -19,7 +19,6 @@ void Image::allocateDeviceMemory() {
         cudaError_t ok;
         uint * deviceMemory = nullptr;
 
-
         ok = cudaMalloc(&deviceMemory, shape.x * shape.y * sizeof(uint));
         checkCudaErrors(ok);
         deviceData = std::shared_ptr<uint> (deviceMemory, [&](uint* ptr){ cudaFree(ptr); });
@@ -62,6 +61,47 @@ bool Image::loadPNG(std::string filename) {
     // copy into device memory (should be constant...)
     copyHostToDevice();
 
+    return true;
+}
+
+bool Image::savePNG(std::string filename, bool doFlip){
+    std::vector<unsigned char> png;
+    
+    if (!hostAllocated) { 
+        std::cout << "[ERROR] no data to save...\n"; 
+        return false;
+    }
+
+    unsigned char r,g,b,a;
+    for (int i = 0; i < size(); i ++) {
+        //mask and shift our colors back.
+        uint color = hostData.get()[i];
+        a = (color & 0xFF000000) >> 24;
+        b = (color & 0x00FF0000) >> 16;
+        g = (color & 0x0000FF00) >> 8;
+        r = (color & 0x000000FF);
+
+        if (doFlip) {
+            png.push_back(a);
+            png.push_back(b);
+            png.push_back(g);
+            png.push_back(r);
+        } else {
+            png.push_back(r);
+            png.push_back(g);
+            png.push_back(b);
+            png.push_back(a);
+        }
+    } 
+    if (doFlip) {
+        std::reverse(png.begin(), png.end());
+    }
+    unsigned error = lodepng::encode(filename, png, shape.x, shape.y);
+
+    if (error) {
+        std::cout << "[ERROR] Unable to save png: " << lodepng_error_text(error) << std::endl;
+        return false;
+    } 
     return true;
 }
 
