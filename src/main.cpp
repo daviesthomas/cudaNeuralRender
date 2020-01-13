@@ -53,6 +53,8 @@ std::string matcapPath;
 uint width, height;
 
 int colorType = 0;
+int numInputs = 3;  //3 for xyz, 4 for xyzt (where t is frame count)
+int frameNumber = 0;
 
 // global toggle for saving frame
 bool doSaveNextFrame = false;
@@ -63,7 +65,7 @@ dim3 blockSize(8, 8);
 dim3 gridSize;
 
 float3 viewRotation = make_float3(0.0, 180.0,0.0);
-float3 viewTranslation = make_float3(.0, 0.0, -6.0f);
+float3 viewTranslation = make_float3(.0, 0.0, -2.5f);
 
 Eigen::Matrix4f normalMatrix;
 Eigen::Matrix<float, 3,4,Eigen::RowMajor> transposedModelView;
@@ -98,11 +100,13 @@ extern "C" void render_kernel(
     uint *d_output, 
     uint imageW, 
     uint imageH, 
+    uint numInputs,
     NeuralNetwork nn,
     Image matcap
 );
 
-extern "C" void copyViewMatrices(float *invViewMatrix, size_t sizeofInvModelViewMat, float *normalMatrix, size_t sizeofNormalMatrix, int colorType);
+extern "C" void copyViewMatrices(float *invViewMatrix, size_t sizeofInvModelViewMat, float *normalMatrix, size_t sizeofNormalMatrix, int frameNumber);
+extern "C" void copyStaticSettings(int colorType, int numInputs);
 
 void computeFPS()
 {
@@ -158,8 +162,7 @@ void initPixelBuffer()
 void render()
 {
     // copy view matrices to constant memory
-    copyViewMatrices(transposedModelView.data(), sizeof(float4)*3, normalMatrix.data(), sizeof(float4)*4, colorType);
-
+    copyViewMatrices(transposedModelView.data(), sizeof(float4)*3, normalMatrix.data(), sizeof(float4)*4, frameNumber);
 
     // map PBO to get CUDA device pointer
     uint *d_output;
@@ -173,13 +176,13 @@ void render()
     checkCudaErrors(cudaMemset(d_output, 0, width*height*4));
 
     // call CUDA kernel, writing results to PBO
-    
     render_kernel(
         gridSize, 
         blockSize, 
         d_output, 
         width, 
         height, 
+        numInputs,
         nn,
         matcap
     );
@@ -275,11 +278,15 @@ void idle()
 void keyboard(unsigned char key, int x, int y)
 {
     const int SPACE = 32;
+    const int Q = 113;
     switch (key)
     {   
         case SPACE:
             //save image here! 
             doSaveNextFrame = true;
+            break;
+        case Q:
+            printf("Rotation : (%f %f) Zoom: (%f)\n", viewRotation.x, viewRotation.y, viewTranslation.z);
             break;
         default:
             printf("you pressed a key! %d\n", key);
@@ -393,8 +400,7 @@ void generateSingleImage()
 
     updateViewMatrices();
 
-    
-    copyViewMatrices(transposedModelView.data(), sizeof(float4)*3, normalMatrix.data(), sizeof(float4)*4, colorType);
+    copyViewMatrices(transposedModelView.data(), sizeof(float4)*3, normalMatrix.data(), sizeof(float4)*4, frameNumber);
 
     cudaDeviceSynchronize();
     sdkStartTimer(&timer);
@@ -406,6 +412,7 @@ void generateSingleImage()
         d_output, 
         width, 
         height, 
+        numInputs,
         nn,
         matcap
     );
@@ -437,7 +444,8 @@ void generateSingleImage()
         }
         ext += std::to_string(saveCount) + ".png";
     } else {
-        ext = "render.png";
+        std::string base_filename = neuralGeometryPath.substr(neuralGeometryPath.find_last_of("/\\") + 1);
+        ext = base_filename + ".png";
     }
 
     std::cout << "saving frame: " << renderSavePath + ext << std::endl;
@@ -531,6 +539,7 @@ void usage() {
     std::cout << "\t-rz rotation in degree about z axis \n";
     std::cout << "\t--single if present, only a single frame is rendered and saved. (default: false)\n";
     std::cout << "\t--spin if present 360 images created for production of a gif of shape rotating :) \n";
+    std::cout << "\t--animation toggle if running animation demo \n";
     std::cout << "\t-h (--help)\n";
 }
 
@@ -585,6 +594,10 @@ void parseCmdOptions(int argc, char** argv)
         doSpin = false;
     }
 
+    if (cmdOptionExists(argv, argv+argc, "--animation")){
+        numInputs = 4;
+    }
+
     viewRotation.x = rx;
     viewRotation.y = ry;
     
@@ -624,6 +637,7 @@ main(int argc, char **argv)
         colorType = 1;
     }
 
+    copyStaticSettings(colorType, numInputs);
     gridSize = dim3(iDivUp(width, blockSize.x), iDivUp(height, blockSize.y));
 
     sdkCreateTimer(&timer);
