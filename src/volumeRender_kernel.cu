@@ -30,7 +30,9 @@ typedef struct
 
 __constant__ float3x4 c_invViewMatrix;  // inverse view matrix
 __constant__ float4x4 c_normalMatrix;
-__constant__ int c_coloringType = 0;  //default to ratio coloring.
+__constant__ int c_coloringType;    // 0- normal ratio, 1- matcap
+__constant__ int c_numInputs;       // 3- standard, 4- frame
+__constant__ int c_frameNumber;     // used only in animation mode
 
 struct Ray
 {
@@ -46,8 +48,9 @@ struct Sphere
 
 const uint BACKGROUND_COLOR = 0;
 const int COLOR_MASK_VAL = 6;
-const float EPSILON = 0.001;
-const int MAX_STEPS = 70;
+const float NORMAL_EPSILON = 0.001;
+const float MARCHING_EPSILON = 0.000001;
+const int MAX_STEPS = 60;
 
 
 // intersect ray with a sphere
@@ -220,7 +223,7 @@ __device__ uint matCapColor(float3 normal, const uint* d_matcap, int matW, int m
     int uvx = (normal_eye.x * 0.5 + 0.5) * matW;
     int uvy = (normal_eye.y * 0.5 + 0.5) * matH;
     
-    int index = uvy * matW + uvx;
+    int index = uvx * matH + uvy;
 
     if (index < 0) {
         return rgbaFloatToInt(make_float4(0.0f));
@@ -273,6 +276,7 @@ singleMarch(
     float3 point = getFloat3(d_points, 3*id);
 
     const float tstep = tanh(d_sdf[inferenceIndex]);
+
     d_tfar[id] -= tstep;
 
     if (d_tfar[id] <= 0) {
@@ -286,10 +290,9 @@ singleMarch(
     setFloat3(d_points, 3*id, point);
 
     // if close enough, we're done!
-    if (tstep < EPSILON) {
+    if (tstep < MARCHING_EPSILON) {
         d_mask[id] = COLOR_MASK_VAL;     // prep for coloring!
     };
-    
 }
 
 // simple function for debugging 
@@ -312,7 +315,6 @@ void printCrap(Image& idSDFMap, Image& stepMask, Matrix& points, Matrix& batch) 
     }
     printf("BATCH: \n");
     for (int i = 0; i < batch.size()-2; i += 3) {
-        
         printf("\t %d: (%f, %f, %f) \n", i/3, batch[i],batch[i+1],batch[i+2] );
     }
     std::cout << "\n\n";
@@ -347,21 +349,27 @@ void createBatch (
     if (maskVal == 0) return;
 
     // index of where to store points in batch
-    uint batchIdx = d_idSDFMap[idx]*3;
+    uint batchIdx = d_idSDFMap[idx]*c_numInputs;    // if frame present. we offset 4 at a time!
 
     // set points according to mask val
     // mask val == 1 for step request (1 points inference)
     // mask val == 6 for normal request (6 points inference)
     if (maskVal == 1) {
-        d_batch[batchIdx ] = d_points[idx*3];
+        d_batch[batchIdx] = d_points[idx*3];
         d_batch[batchIdx + 1] = d_points[idx*3 + 1];
         d_batch[batchIdx + 2] = d_points[idx*3 + 2];
+        if (c_numInputs == 4) {
+            d_batch[batchIdx + 3] = c_frameNumber;
+        }
     } else {
         // add all points for normal estimation [x+eps, y, z] [x-eps, y, z] ....
         for (int i = 0; i < 3*maskVal; i += 3) {
-            d_batch[batchIdx + i]     = d_points[idx*3]     + modifier[i]*EPSILON;
-            d_batch[batchIdx + i + 1] = d_points[idx*3 + 1] + modifier[i+1]*EPSILON;
-            d_batch[batchIdx + i + 2] = d_points[idx*3 + 2] + modifier[i+2]*EPSILON;
+            d_batch[batchIdx + i]     = d_points[idx*3]     + modifier[i]*NORMAL_EPSILON;
+            d_batch[batchIdx + i + 1] = d_points[idx*3 + 1] + modifier[i+1]*NORMAL_EPSILON;
+            d_batch[batchIdx + i + 2] = d_points[idx*3 + 2] + modifier[i+2]*NORMAL_EPSILON;
+            if (c_numInputs == 4) {
+                d_batch[batchIdx + i + 3] = c_frameNumber;
+            }
         }
     }
 } 
@@ -378,8 +386,8 @@ int formatInferenceReqs(Image& idSDFMap, Image& stepMask, Matrix& points, Matrix
         0
     );
 
-    thrust::host_vector<uint> t(lastVal-1,lastVal);
-    int batchSize = t[0];
+    int batchSize;
+    thrust::copy(lastVal-1, lastVal, &batchSize);
     batch.shape.y = batchSize;
 
     // prepare batch
@@ -395,7 +403,6 @@ int formatInferenceReqs(Image& idSDFMap, Image& stepMask, Matrix& points, Matrix
     return batchSize;
 }
 
-
 Matrix points;
 Matrix batch;
 Matrix ray;
@@ -405,11 +412,11 @@ Image idSDFMap;
 
 int prevImageSize = -1;
 
-void allocateBuffers(const int imageW, const int imageH) {
+void allocateBuffers(const int imageW, const int imageH, int numInputs) {
     int imageSize = imageW*imageH;
 
     points = Matrix(Shape(3, imageSize));
-    batch = Matrix(Shape(3*COLOR_MASK_VAL, imageSize)); 
+    batch = Matrix(Shape(numInputs*COLOR_MASK_VAL, imageSize)); 
     ray = Matrix(Shape(3, imageSize));
     far = Matrix(Shape(1, imageSize));
     stepMask = Image(Shape(imageW, imageH));
@@ -424,7 +431,6 @@ void allocateBuffers(const int imageW, const int imageH) {
     batch.allocateMemory();
 
     // we need to reinit the sdf buffer
-
 }
 
 extern "C"
@@ -434,13 +440,14 @@ void render_kernel(
     uint *d_output, 
     uint imageW, 
     uint imageH,
+    uint numInputs,
     NeuralNetwork& nn,
     Image matcap
 ) {
     int imageSize = imageH*imageW;
 
     if (imageSize != prevImageSize) {
-        allocateBuffers(imageW, imageH);
+        allocateBuffers(imageW, imageH, numInputs);
         prevImageSize = imageSize;
     }
     
@@ -477,8 +484,9 @@ void render_kernel(
             break;
         }
 
-        // infer all points required
-        sdf = nn.forward(batch, imageSize*COLOR_MASK_VAL);  //the x6 is too ensure memory exists if entire image needs to be colored.
+        // infer all points required (this has no limit on batch size... large models with large images will exhaust memory very quickly!)
+        // TODO: have a toggle to batch our batches into fixed chunks... this would allow us to infer large networks! (second param would be fixed and we chunk data!)
+        sdf = nn.forward(batch, imageSize*COLOR_MASK_VAL);  // COLOR_MASK_VAL gives number of points required for normal estimation.
         // take step, updating mask, points, and ray position (tfar)
         singleMarch<<<gridSize, blockSize>>>(
             d_output,
@@ -509,15 +517,21 @@ void render_kernel(
     }
     //TODO: set any ray that didnt converge to background color
     
-
 }
 
 extern "C"
-void copyViewMatrices(float *invViewMatrix, size_t sizeofViewMatrix, float *normalMatrix, size_t sizeofNormalMatrix, int colorType)
+void copyViewMatrices(float *invViewMatrix, size_t sizeofViewMatrix, float *normalMatrix, size_t sizeofNormalMatrix, int frameNumber, int numInputs)
 {
     checkCudaErrors(cudaMemcpyToSymbol(c_invViewMatrix, invViewMatrix, sizeofViewMatrix));
     checkCudaErrors(cudaMemcpyToSymbol(c_normalMatrix, normalMatrix, sizeofNormalMatrix));
-    checkCudaErrors(cudaMemcpyToSymbol(c_coloringType, &colorType, sizeof(int)));
+    checkCudaErrors(cudaMemcpyToSymbol(c_frameNumber, &frameNumber, sizeof(int)));
 }
+
+extern "C"
+void copyStaticSettings(int colorType, int numInputs) {
+    checkCudaErrors(cudaMemcpyToSymbol(c_coloringType, &colorType, sizeof(int)));
+    checkCudaErrors(cudaMemcpyToSymbol(c_numInputs, &numInputs, sizeof(int)));
+}
+
 
 #endif // #ifndef _VOLUMERENDER_KERNEL_CU_
