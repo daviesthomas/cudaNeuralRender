@@ -64,10 +64,10 @@ bool doSaveNextFrame = false;
 dim3 blockSize(8, 8);
 dim3 gridSize;
 
-float3 viewRotation = make_float3(0.0, 180.0,0.0);
-float3 viewTranslation = make_float3(.0, 0.0, -2.5f);
+float3 viewRotation;
+float3 viewTranslation;
 
-Eigen::Matrix4f normalMatrix;
+Eigen::Matrix<float, 4,4,Eigen::RowMajor> normalMatrix;
 Eigen::Matrix<float, 3,4,Eigen::RowMajor> transposedModelView;
 
 GLuint pbo = 0;     // OpenGL pixel buffer object
@@ -218,7 +218,7 @@ void updateViewMatrices() {
     transposedModelView.row(1) = modelView.matrix().row(1);
     transposedModelView.row(2) = modelView.matrix().row(2);
     
-    normalMatrix = modelView.matrix().transpose().inverse();
+    normalMatrix = modelView.matrix().inverse();
 }
 
 
@@ -245,6 +245,11 @@ void display()
     glBindTexture(GL_TEXTURE_2D, tex);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, 0);
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER_ARB, 0);
+
+    glDisable(GL_CULL_FACE);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glEnable(GL_BLEND);
+    glDisable(GL_ALPHA_TEST);
 
     // draw textured quad
     glEnable(GL_TEXTURE_2D);
@@ -537,6 +542,7 @@ void usage() {
     std::cout << "\t-rx rotation in degree about x axis \n";
     std::cout << "\t-ry rotation in degree about y axis \n";
     std::cout << "\t-rz rotation in degree about z axis \n";
+    std::cout << "\t-z zoom! \n";
     std::cout << "\t--single if present, only a single frame is rendered and saved. (default: false)\n";
     std::cout << "\t--spin if present 360 images created for production of a gif of shape rotating :) \n";
     std::cout << "\t--animation toggle if running animation demo \n";
@@ -577,7 +583,7 @@ void parseCmdOptions(int argc, char** argv)
         matcapPath = getCmdOption(argv, argv+argc, "-M");
     } 
 
-    float rx, ry, z;
+    float rx, ry, rz, zoom;
     if (cmdOptionExists(argv, argv+argc, "-rx")){
         rx = atof(getCmdOption(argv, argv+argc, "-rx"));
     } else {
@@ -587,6 +593,17 @@ void parseCmdOptions(int argc, char** argv)
         ry = atof(getCmdOption(argv, argv+argc, "-ry"));
     } else {
         ry = 0.0;
+    }
+    if (cmdOptionExists(argv, argv+argc, "-ry")){
+        rz = atof(getCmdOption(argv, argv+argc, "-ry"));
+    } else {
+        rz = 0.0;
+    }
+
+    if(cmdOptionExists(argv, argv+argc, "-z")) {
+        zoom = -atof(getCmdOption(argv, argv+argc, "-z"));
+    } else {
+        zoom = -2.0;
     }
     if (cmdOptionExists(argv, argv+argc, "--spin")){
         doSpin = true;
@@ -598,8 +615,10 @@ void parseCmdOptions(int argc, char** argv)
         numInputs = 4;
     }
 
+    viewRotation.z = rz;
     viewRotation.x = rx;
     viewRotation.y = ry;
+    viewTranslation.z = zoom;
     
     if (cmdOptionExists(argv, argv+argc, "--single")) {
         singleImage = true;
