@@ -48,9 +48,9 @@ struct Sphere
 
 const uint BACKGROUND_COLOR = 0;
 const int COLOR_MASK_VAL = 6;
-const float NORMAL_EPSILON = 0.001;
+const float NORMAL_EPSILON = 0.0001;
 const float MARCHING_EPSILON = 0.000001;
-const int MAX_STEPS = 60;
+const int MAX_STEPS = 6000;
 
 
 // intersect ray with a sphere
@@ -69,6 +69,92 @@ bool intersectSphere(Ray ray, Sphere sphere, float *tnear, float *tfar)
         return true;
     }
     return false;
+}
+
+
+__device__
+//https://iquilezles.org/www/articles/distfunctions/distfunctions.htm
+float sdfSphere( float3 p, float s )
+{
+  return length(p)-s;
+}
+
+__device__
+float3 max(float3 a, float3 b)
+{
+  return make_float3(a.x > b.x ? a.x : b.x,
+                a.y > b.y ? a.y : b.y,
+                a.z > b.z ? a.z : b.z);
+}
+
+__device__
+float sdfBox(float3 p, float3 b, float r = 0.0) {
+    float3 q = fabs(p) - b;
+    float3 zero = make_float3(0.0);
+    float d = length(max(q, zero)) + min(max(q.x, max(q.y,q.z)), 0.0) - r;
+    
+    //return min(max(q.x,max(q.y,q.z)),0.0) + length()
+    return d;
+}
+
+__device__
+float sdfPlane( float3 p) {
+    return p.y - 0.5;  // we force onto bottom of bounds
+}
+
+__device__
+float sdfCylinder( float3 p, float3 c) {
+    float l = length(make_float2(p.x, p.y) - make_float2(c.x, c.z));
+  
+    return l-c.y;
+}
+
+__device__ 
+float sdfOpDisplace(float3 p, float s) {
+    float d = s;
+
+    d += sin(5*p.x)*sin(5*p.y)*sin(5*p.z)*0.05;
+
+    return d;
+}
+
+__device__
+float sdfOpRound(float s, float rad) {
+    return s - rad;
+}
+
+__device__
+float sdfOpOnion(float s, float thickness) {
+    return abs(s) - thickness;
+}
+
+// some useful SDF helpers.
+__device__
+float sdfOpIntersect(float distA, float distB) {
+    return max(distA, distB);
+}
+
+__device__
+float sdfOpUnion(float distA, float distB) {
+    return min(distA, distB);
+}
+
+__device__
+float sdfOpSubtraction(float distA, float distB) {
+    return max(distA, -distB);
+}
+
+__device__
+float sdfOpSmoothSubtraction( float d1, float d2, float k ) {
+    float h = __saturatef( 0.5 - 0.5*(d1+d2)/k);
+    float mix = d1*(1.0-h) - d2*h;
+    return mix + k*h*(1.0-h); }
+
+__device__
+float sdfOpSmoothUnion(float d1, float d2, float k) {
+    float h = __saturatef(0.5 + 0.5*(d2-d1)/k);
+    float mix = d2*(1.0-h) + d1*h;
+    return mix - k*h*(1.0-h);
 }
 
 // transform vector by matrix (no translation)
@@ -131,6 +217,7 @@ void setFloat3(float* D, int id, float3 f) {
     D[id + 2] = f.z;
 }
 
+
 __global__ void
 initMarcher(
     uint *d_output, 
@@ -164,7 +251,7 @@ initMarcher(
 
     // With more shapes, this would be created elsewhere and passed in
     Sphere boundingSphere;
-    boundingSphere.c = make_float3(0.0f);
+    boundingSphere.c = make_float3(0.0f, 0.0f, 0.0f);
     boundingSphere.r = 0.9;
 
     // find intersection with box
@@ -197,36 +284,95 @@ initMarcher(
     d_mask[id] = 1;
 }
 
-__device__ 
-float3 surfaceNormal(int idx, const float* d_sdf) {
-    float3 normal;
-    normal.x = d_sdf[idx] - d_sdf[idx+1];
-    normal.y = d_sdf[idx+2] - d_sdf[idx + 3];
-    normal.z = d_sdf[idx + 4] - d_sdf[idx + 5];
-    normal = normalize(normal);
-    return normal;
+
+__device__
+float manyCylinderCut(float3 p, float nSDF) {
+    float s = nSDF;
+
+    float3 c = make_float3(0.02);
+    float3 cP = p;
+    cP.y -= 0.5;
+    for (int i = 0; i < 300; i ++) {
+        if (i%20 == 0 ) {
+            cP.y += 0.1;
+            cP.x = p.x + 0.9;
+        }
+        
+        s = sdfOpSmoothSubtraction(s, sdfCylinder(cP,c), 0.01);
+        cP.x -= 0.1;
+    }
+
+    return s;
 }
+
+__device__
+float displacementPattern(float3 p, float nSDF) {
+    return sdfOpDisplace(p, tanh(nSDF));
+}
+
+__device__ 
+float sceneSDF(float3 p, float nSDF) {
+    //return displacementPattern(p, nSDF);
+    //return sdfSphere(p, 0.9);
+    //return sdfOpRound(tanh(nSDF),0.04);
+
+    return manyCylinderCut(p, nSDF);
+    //float3 boxp = make_float3(p.x+0.5, p.y+0.2, p.z-0.4);
+    //float3 boxb = make_float3(0.1,0.1,0.1);
+
+    //return sdfOpSmoothSubtraction(sdfCylinder(boxp,boxb), tanh(nSDF), 0.05);//, nSDF);
+
+    return tanh(nSDF);
+}
+
+
+__device__ 
+float3 surfaceNormal(int idx, const float* d_sdf, const float3 p) {
+    float3 normal;
+
+    float3 p0 = make_float3(p.x + NORMAL_EPSILON, p.y, p.z);
+    float3 p1 = make_float3(p.x - NORMAL_EPSILON, p.y, p.z);
+    normal.x = sceneSDF(p0, d_sdf[idx]) - sceneSDF(p1, d_sdf[idx+1]);
+
+    p0 = make_float3(p.x, p.y+ NORMAL_EPSILON, p.z);
+    p1 = make_float3(p.x, p.y - NORMAL_EPSILON, p.z);
+    normal.y = sceneSDF(p0, d_sdf[idx+2]) - sceneSDF(p1, d_sdf[idx + 3]);
+
+    p0 = make_float3(p.x, p.y, p.z+ NORMAL_EPSILON);
+    p1 = make_float3(p.x, p.y , p.z- NORMAL_EPSILON);
+    normal.z = sceneSDF(p0, d_sdf[idx + 4]) - sceneSDF(p1, d_sdf[idx + 5]);
+
+    return normalize(normal);
+
+}
+
 
 __device__
 uint facingColor(float3 n, float3 rayDir) {
     float ratio = max(0.0, dot(n,-rayDir) );
-
-    return rgbaFloatToInt(make_float4(ratio));
+    return rgbaFloatToInt(make_float4(ratio,ratio,ratio, 1.0));
 }
 
 
-__device__ uint matCapColor(float3 normal, const uint* d_matcap, int matW, int matH) {
+__device__ 
+uint matCapColor(float3 normal, const uint* d_matcap, int matW, int matH) {
     float4 normal_eye4 = mul(c_normalMatrix, make_float4(normal.x, normal.y,normal.z, 0.0));
     float3 normal_eye = normalize(make_float3(normal_eye4.x, normal_eye4.y, normal_eye4.z));
     
     // TODO: matcap should be in texture memory... 
-    int uvx = (normal_eye.x * 0.5 + 0.5) * matW;
-    int uvy = (normal_eye.y * 0.5 + 0.5) * matH;
+    int uvx = (normal_eye.x * 0.5 + 0.5) * (matW-1);
+    int uvy = (normal_eye.y * 0.5 + 0.5) * (matH-1);
     
-    int index = uvx * matH + uvy;
+    int index = uvy * matW + uvx;
 
     if (index < 0) {
+        //fall back that should not occur.
+        printf("\n\n!!!!CRAP!!!!\n\n\n");
         return rgbaFloatToInt(make_float4(0.0f));
+    }
+
+    if (d_matcap[index] == 0) {
+        printf("uv: (%d, %d) n: (%f,%f,%f)  ne: (%f,%f,%f)  len_n: %f\n",uvx, uvy, normal.x, normal.y, normal.z, normal_eye.x, normal_eye.y, normal_eye.z, length(normal));
     }
     return d_matcap[index];
 }
@@ -258,11 +404,13 @@ singleMarch(
     if (d_mask[id] == 0) return;    // masked out
 
     int inferenceIndex = d_idSDFMap[id];
+
     const float3 ray = getFloat3(d_ray, 3*id);
+    float3 point = getFloat3(d_points, 3*id);
 
     if (d_mask[id] >= COLOR_MASK_VAL) {
         // needs to be colored.
-        float3 n = surfaceNormal(inferenceIndex, d_sdf);
+        float3 n = surfaceNormal(inferenceIndex, d_sdf, point);
         if (c_coloringType == 0) {
             d_output[id] = facingColor(n, ray);
         } else {
@@ -273,9 +421,7 @@ singleMarch(
         return;
     }
 
-    float3 point = getFloat3(d_points, 3*id);
-
-    const float tstep = tanh(d_sdf[inferenceIndex]);
+    const float tstep = sceneSDF(point, d_sdf[inferenceIndex]);
 
     d_tfar[id] -= tstep;
 
