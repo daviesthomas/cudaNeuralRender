@@ -31,7 +31,7 @@ class Image {
         void maybeAllocateMemory(Shape shape);
 
         bool loadPNG(std::string filename);
-        bool savePNG(std::string filename,bool doFlip=true);
+        bool savePNG(std::string filename,bool doFlip=true,bool doMirror=true);
 
         void copyHostToDevice();
         void copyDeviceToHost();

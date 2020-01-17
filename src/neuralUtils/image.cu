@@ -64,7 +64,7 @@ bool Image::loadPNG(std::string filename) {
     return true;
 }
 
-bool Image::savePNG(std::string filename, bool doFlip){
+bool Image::savePNG(std::string filename, bool doFlip, bool doMirror){
     std::vector<unsigned char> png;
     
     if (!hostAllocated) { 
@@ -96,6 +96,10 @@ bool Image::savePNG(std::string filename, bool doFlip){
     if (doFlip) {
         std::reverse(png.begin(), png.end());
     }
+    if (doMirror) {
+        
+    }
+
     unsigned error = lodepng::encode(filename, png, shape.x, shape.y);
 
     if (error) {
