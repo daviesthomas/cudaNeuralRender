@@ -52,28 +52,11 @@ const float NORMAL_EPSILON = 0.0001;
 const float MARCHING_EPSILON = 0.000001;
 const int MAX_STEPS = 6000;
 
-
-// intersect ray with a sphere
-__device__
-bool intersectSphere(Ray ray, Sphere sphere, float *tnear, float *tfar)
-{
-    float3 Q = ray.o - sphere.c;
-    float a = dot(ray.d, ray.d);
-    float b = 2.0 * dot(Q, ray.d);
-    float c = dot(Q,Q) - sphere.r*sphere.r;
-    float discrim = b*b - 4*a*c;
-
-    if (discrim > 0) {
-        *tnear = (-b - sqrt(discrim)) / (2.0 * a); 
-        *tfar =  (-b + sqrt(discrim)) / (2.0 *a);
-        return true;
-    }
-    return false;
-}
-
+// SDF KERNELS AND HELPERS! 
+// Collection of signed distance operations and primitives.
+// modified from Iquilez' awesome site :) https://iquilezles.org/www/articles/distfunctions/distfunctions.htm
 
 __device__
-//https://iquilezles.org/www/articles/distfunctions/distfunctions.htm
 float sdfSphere( float3 p, float s )
 {
   return length(p)-s;
@@ -155,6 +138,72 @@ float sdfOpSmoothUnion(float d1, float d2, float k) {
     float h = __saturatef(0.5 + 0.5*(d2-d1)/k);
     float mix = d2*(1.0-h) + d1*h;
     return mix - k*h*(1.0-h);
+}
+
+__device__
+float manyCylinderCut(float3 p, float nSDF) {
+    float s = nSDF;
+
+    float3 c = make_float3(0.02);
+    float3 cP = p;
+    cP.y -= 0.5;
+    for (int i = 0; i < 300; i ++) {
+        if (i%20 == 0 ) {
+            cP.y += 0.1;
+            cP.x = p.x + 0.9;
+        }
+        
+        s = sdfOpSmoothSubtraction(s, sdfCylinder(cP,c), 0.01);
+        cP.x -= 0.1;
+    }
+
+    return s;
+}
+
+__device__
+float manySphere(float3 p, float nSDF, bool doUnion) {
+    float s = nSDF;
+
+    float3 cP = p;
+    cP.y -= 0.6;
+    cP.z += -0.7 + (c_frameNumber* 2*0.7/360);
+    for (int i = 0; i < 9; i ++) {
+        if (i%3 == 0 ) {
+            cP.y += 0.4;
+            cP.x = p.x + 0.5;
+        }
+        if (doUnion){
+            s = sdfOpSmoothUnion(s, sdfSphere(cP,0.1), 0.01);
+        } else {
+            s = sdfOpSmoothSubtraction(s, sdfSphere(cP,0.1), 0.01);
+        }
+        cP.x -= 0.4;
+    }
+    return s;
+}
+
+__device__
+float displacementPattern(float3 p, float nSDF) {
+    return sdfOpDisplace(p, tanh(nSDF));
+}
+
+
+// intersect ray with a sphere
+__device__
+bool intersectSphere(Ray ray, Sphere sphere, float *tnear, float *tfar)
+{
+    float3 Q = ray.o - sphere.c;
+    float a = dot(ray.d, ray.d);
+    float b = 2.0 * dot(Q, ray.d);
+    float c = dot(Q,Q) - sphere.r*sphere.r;
+    float discrim = b*b - 4*a*c;
+
+    if (discrim > 0) {
+        *tnear = (-b - sqrt(discrim)) / (2.0 * a); 
+        *tfar =  (-b + sqrt(discrim)) / (2.0 *a);
+        return true;
+    }
+    return false;
 }
 
 // transform vector by matrix (no translation)
@@ -285,53 +334,6 @@ initMarcher(
     d_mask[id] = 1;
 }
 
-
-__device__
-float manyCylinderCut(float3 p, float nSDF) {
-    float s = nSDF;
-
-    float3 c = make_float3(0.02);
-    float3 cP = p;
-    cP.y -= 0.5;
-    for (int i = 0; i < 300; i ++) {
-        if (i%20 == 0 ) {
-            cP.y += 0.1;
-            cP.x = p.x + 0.9;
-        }
-        
-        s = sdfOpSmoothSubtraction(s, sdfCylinder(cP,c), 0.01);
-        cP.x -= 0.1;
-    }
-
-    return s;
-}
-
-__device__
-float manySphere(float3 p, float nSDF, bool doUnion) {
-    float s = nSDF;
-
-    float3 cP = p;
-    cP.y -= 0.6;
-    cP.z += -0.7 + (c_frameNumber* 2*0.7/360);
-    for (int i = 0; i < 9; i ++) {
-        if (i%3 == 0 ) {
-            cP.y += 0.4;
-            cP.x = p.x + 0.5;
-        }
-        if (doUnion){
-            s = sdfOpSmoothUnion(s, sdfSphere(cP,0.1), 0.01);
-        } else {
-            s = sdfOpSmoothSubtraction(s, sdfSphere(cP,0.1), 0.01);
-        }
-        cP.x -= 0.4;
-    }
-    return s;
-}
-
-__device__
-float displacementPattern(float3 p, float nSDF) {
-    return sdfOpDisplace(p, tanh(nSDF));
-}
 
 __device__ 
 float sceneSDF(float3 p, float nSDF) {
