@@ -34,6 +34,14 @@ __constant__ int c_coloringType;    // 0- normal ratio, 1- matcap
 __constant__ int c_numInputs;       // 3- standard, 4- frame
 __constant__ int c_frameNumber;     // used only in animation mode
 
+// tetrahedron method of estimating normals (http://iquilezles.org/www/articles/normalsSDF/normalsSDF.htm)
+__constant__ float tetrahedronVerts[] = {  
+    1, -1, -1,
+    -1, -1,  1,
+    -1,  1, -1,
+    1,  1,  1,
+};
+
 struct Ray
 {
     float3 o;   // origin
@@ -47,8 +55,8 @@ struct Sphere
 };
 
 const uint BACKGROUND_COLOR = 0;
-const int COLOR_MASK_VAL = 6;
-const float NORMAL_EPSILON = 0.0001;
+const int COLOR_MASK_VAL = 4;
+const float NORMAL_EPSILON = 0.00001;
 const float MARCHING_EPSILON = 0.000001;
 const int MAX_STEPS = 6000;
 
@@ -141,6 +149,11 @@ float sdfOpSmoothUnion(float d1, float d2, float k) {
 }
 
 __device__
+float displacementPattern(float3 p, float nSDF) {
+    return sdfOpDisplace(p, tanh(nSDF));
+}
+
+__device__
 float manyCylinderCut(float3 p, float nSDF) {
     float s = nSDF;
 
@@ -182,11 +195,6 @@ float manySphere(float3 p, float nSDF, bool doUnion) {
     return s;
 }
 
-__device__
-float displacementPattern(float3 p, float nSDF) {
-    return sdfOpDisplace(p, tanh(nSDF));
-}
-
 
 // intersect ray with a sphere
 __device__
@@ -204,6 +212,21 @@ bool intersectSphere(Ray ray, Sphere sphere, float *tnear, float *tfar)
         return true;
     }
     return false;
+}
+
+__device__ 
+float sceneSDF(float3 p, float nSDF) {
+    //return displacementPattern(p, nSDF);
+    //return sdfSphere(p, 0.9);
+    //return sdfOpRound(tanh(nSDF),0.04);
+    return manySphere(p, nSDF, true);
+    return manyCylinderCut(p, nSDF);
+    //float3 boxp = make_float3(p.x+0.5, p.y+0.2, p.z-0.4);
+    //float3 boxb = make_float3(0.1,0.1,0.1);
+
+    //return sdfOpSmoothSubtraction(sdfCylinder(boxp,boxb), tanh(nSDF), 0.05);//, nSDF);
+
+    return tanh(nSDF);
 }
 
 // transform vector by matrix (no translation)
@@ -336,38 +359,21 @@ initMarcher(
 
 
 __device__ 
-float sceneSDF(float3 p, float nSDF) {
-    //return displacementPattern(p, nSDF);
-    //return sdfSphere(p, 0.9);
-    //return sdfOpRound(tanh(nSDF),0.04);
-    return manySphere(p, nSDF, true);
-    return manyCylinderCut(p, nSDF);
-    //float3 boxp = make_float3(p.x+0.5, p.y+0.2, p.z-0.4);
-    //float3 boxb = make_float3(0.1,0.1,0.1);
-
-    //return sdfOpSmoothSubtraction(sdfCylinder(boxp,boxb), tanh(nSDF), 0.05);//, nSDF);
-
-    return tanh(nSDF);
-}
-
-
-__device__ 
 float3 surfaceNormal(int idx, const float* d_sdf, const float3 p) {
-    float3 normal;
+    // Calculate surface normal using tetrahedron technique (4 pts instead of 6)
+    float3 tetP = make_float3(tetrahedronVerts[0], tetrahedronVerts[1], tetrahedronVerts[2]);
+    float3 p0 = tetP*sceneSDF(p + tetP*NORMAL_EPSILON, d_sdf[idx]);
 
-    float3 p0 = make_float3(p.x + NORMAL_EPSILON, p.y, p.z);
-    float3 p1 = make_float3(p.x - NORMAL_EPSILON, p.y, p.z);
-    normal.x = sceneSDF(p0, d_sdf[idx]) - sceneSDF(p1, d_sdf[idx+1]);
+    tetP = make_float3(tetrahedronVerts[3], tetrahedronVerts[4], tetrahedronVerts[5]);
+    float3 p1 = tetP*sceneSDF(p + tetP*NORMAL_EPSILON, d_sdf[idx+1]);
 
-    p0 = make_float3(p.x, p.y+ NORMAL_EPSILON, p.z);
-    p1 = make_float3(p.x, p.y - NORMAL_EPSILON, p.z);
-    normal.y = sceneSDF(p0, d_sdf[idx+2]) - sceneSDF(p1, d_sdf[idx + 3]);
+    tetP = make_float3(tetrahedronVerts[6], tetrahedronVerts[7], tetrahedronVerts[8]);
+    float3 p2 = tetP*sceneSDF(p + tetP*NORMAL_EPSILON, d_sdf[idx+2]);;
 
-    p0 = make_float3(p.x, p.y, p.z+ NORMAL_EPSILON);
-    p1 = make_float3(p.x, p.y , p.z- NORMAL_EPSILON);
-    normal.z = sceneSDF(p0, d_sdf[idx + 4]) - sceneSDF(p1, d_sdf[idx + 5]);
+    tetP = make_float3(tetrahedronVerts[9], tetrahedronVerts[10], tetrahedronVerts[11]);
+    float3 p3 = tetP*sceneSDF(p + tetP*NORMAL_EPSILON, d_sdf[idx+3]);
 
-    return normalize(normal);
+    return normalize(p0 + p1 + p2 + p3);
 }
 
 
@@ -503,16 +509,7 @@ void createBatch (
     const float* d_points, 
     const int imageW, 
     const int imageH) 
-{
-    const int modifier[] = {
-         1, 0, 0,
-        -1, 0, 0,
-         0, 1, 0,
-         0,-1, 0,
-         0, 0, 1,
-         0, 0,-1
-    };
-    
+{    
     uint x = blockIdx.x*blockDim.x + threadIdx.x;
     uint y = blockIdx.y*blockDim.y + threadIdx.y;
 
@@ -539,9 +536,9 @@ void createBatch (
     } else {
         // add all points for normal estimation [x+eps, y, z] [x-eps, y, z] ....
         for (int i = 0; i < 3*maskVal; i += 3) {
-            d_batch[batchIdx + i]     = d_points[idx*3]     + modifier[i]*NORMAL_EPSILON;
-            d_batch[batchIdx + i + 1] = d_points[idx*3 + 1] + modifier[i+1]*NORMAL_EPSILON;
-            d_batch[batchIdx + i + 2] = d_points[idx*3 + 2] + modifier[i+2]*NORMAL_EPSILON;
+            d_batch[batchIdx + i]     = d_points[idx*3]     + tetrahedronVerts[i]*NORMAL_EPSILON;
+            d_batch[batchIdx + i + 1] = d_points[idx*3 + 1] + tetrahedronVerts[i+1]*NORMAL_EPSILON;
+            d_batch[batchIdx + i + 2] = d_points[idx*3 + 2] + tetrahedronVerts[i+2]*NORMAL_EPSILON;
             if (c_numInputs == 4) {
                 d_batch[batchIdx + i + 3] = c_frameNumber;
             }
