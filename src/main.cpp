@@ -284,6 +284,7 @@ void keyboard(unsigned char key, int x, int y)
 {
     const int SPACE = 32;
     const int Q = 113;
+    const int F = 102;
     switch (key)
     {   
         case SPACE:
@@ -292,6 +293,9 @@ void keyboard(unsigned char key, int x, int y)
             break;
         case Q:
             printf("Rotation : (%f %f) Zoom: (%f)\n", viewRotation.x, viewRotation.y, viewTranslation.z);
+            break;
+        case F:
+            frameNumber += 1;
             break;
         default:
             printf("you pressed a key! %d\n", key);
@@ -468,6 +472,7 @@ void doABarrelRoll(){
     
     for (int i = 0; i < 360; i ++) {
         viewRotation.y = float(i);
+        frameNumber = i;
         generateSingleImage();
     }
 }

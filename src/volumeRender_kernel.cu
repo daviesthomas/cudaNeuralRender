@@ -252,7 +252,7 @@ initMarcher(
     // With more shapes, this would be created elsewhere and passed in
     Sphere boundingSphere;
     boundingSphere.c = make_float3(0.0f, 0.0f, 0.0f);
-    boundingSphere.r = 0.9;
+    boundingSphere.r = 1.2;
 
     // find intersection with box
     float tnear, tfar;
@@ -262,6 +262,7 @@ initMarcher(
     // no need to march if ray never hits bounding primitive
     if ( !hit ) {
         d_mask[id] = 0;
+        // TODO: we should run a mini sdf loop here to get all non-neural geom things showing...
         d_output[id] = BACKGROUND_COLOR;
         return;
     }
@@ -306,6 +307,28 @@ float manyCylinderCut(float3 p, float nSDF) {
 }
 
 __device__
+float manySphere(float3 p, float nSDF, bool doUnion) {
+    float s = nSDF;
+
+    float3 cP = p;
+    cP.y -= 0.6;
+    cP.z += -0.7 + (c_frameNumber* 2*0.7/360);
+    for (int i = 0; i < 9; i ++) {
+        if (i%3 == 0 ) {
+            cP.y += 0.4;
+            cP.x = p.x + 0.5;
+        }
+        if (doUnion){
+            s = sdfOpSmoothUnion(s, sdfSphere(cP,0.1), 0.01);
+        } else {
+            s = sdfOpSmoothSubtraction(s, sdfSphere(cP,0.1), 0.01);
+        }
+        cP.x -= 0.4;
+    }
+    return s;
+}
+
+__device__
 float displacementPattern(float3 p, float nSDF) {
     return sdfOpDisplace(p, tanh(nSDF));
 }
@@ -315,7 +338,7 @@ float sceneSDF(float3 p, float nSDF) {
     //return displacementPattern(p, nSDF);
     //return sdfSphere(p, 0.9);
     //return sdfOpRound(tanh(nSDF),0.04);
-
+    return manySphere(p, nSDF, true);
     return manyCylinderCut(p, nSDF);
     //float3 boxp = make_float3(p.x+0.5, p.y+0.2, p.z-0.4);
     //float3 boxb = make_float3(0.1,0.1,0.1);
@@ -343,7 +366,6 @@ float3 surfaceNormal(int idx, const float* d_sdf, const float3 p) {
     normal.z = sceneSDF(p0, d_sdf[idx + 4]) - sceneSDF(p1, d_sdf[idx + 5]);
 
     return normalize(normal);
-
 }
 
 
