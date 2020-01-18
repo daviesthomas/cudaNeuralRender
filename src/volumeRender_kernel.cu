@@ -356,12 +356,17 @@ uint facingColor(float3 n, float3 rayDir) {
 
 __device__ 
 uint matCapColor(float3 normal, const uint* d_matcap, int matW, int matH) {
+
+
     float4 normal_eye4 = mul(c_normalMatrix, make_float4(normal.x, normal.y,normal.z, 0.0));
     float3 normal_eye = normalize(make_float3(normal_eye4.x, normal_eye4.y, normal_eye4.z));
     
     // TODO: matcap should be in texture memory... 
-    int uvx = (normal_eye.x * 0.5 + 0.5) * (matW-1);
-    int uvy = (normal_eye.y * 0.5 + 0.5) * (matH-1);
+    float fuvx = (normal_eye.x * 0.5 + 0.5) ;
+    float fuvy = (normal_eye.y * 0.5 + 0.5) ;
+
+    int uvx = int(fuvx*(matW-1));
+    int uvy = int(fuvy*(matH-1));
     
     int index = uvy * matW + uvx;
 
@@ -372,7 +377,7 @@ uint matCapColor(float3 normal, const uint* d_matcap, int matW, int matH) {
     }
 
     if (d_matcap[index] == 0) {
-        printf("uv: (%d, %d) n: (%f,%f,%f)  ne: (%f,%f,%f)  len_n: %f\n",uvx, uvy, normal.x, normal.y, normal.z, normal_eye.x, normal_eye.y, normal_eye.z, length(normal));
+        printf("LIKELY A BAD MATCAP! uv: (%d, %d):(%f) n: (%f,%f,%f)  ne: (%f,%f,%f)  len_n: %f\n",uvx, uvy, sqrt(pow(fuvx,2)+ pow(fuvy,2)), normal.x, normal.y, normal.z, normal_eye.x, normal_eye.y, normal_eye.z, length(normal));
     }
     return d_matcap[index];
 }
